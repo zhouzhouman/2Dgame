@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>举火 · 序章地图编辑器</title>
+<style>
+  :root{--bg:#f7f5f0;--panel:#fff;--line:#d8d3c7;--ink:#2c2c2a;--muted:#6b6a63;
+        --amber:#ba7517;--teal:#0f6e56;--coral:#993c1d;--gray:#8a8880;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;font-size:13px}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#fff;
+         border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{font-size:15px;font-weight:500;margin:0 12px 0 0}
+  select,button,input,textarea{font:inherit;color:inherit}
+  select,button{padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}
+  button:hover{border-color:var(--amber)}
+  button.primary{background:var(--amber);color:#fff;border-color:var(--amber)}
+  button.danger{color:var(--coral);border-color:#e8c9be}
+  main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+  #stage{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;overflow:auto;flex:1}
+  #grid{display:grid;gap:0;user-select:none}
+  .cell{width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+        font-size:11px;line-height:1;position:relative;cursor:pointer;color:#9a9790}
+  .cell:hover{outline:1px solid var(--amber);outline-offset:-1px;z-index:2}
+  .t-wall{background:#4a463c;color:#4a463c}
+  .t-door{background:#c9a227;color:#c9a227}
+  .t-road{background:#e8e2d2}
+  .t-grass{background:#eef0e4}
+  .t-field{background:#e3e9cf}
+  .t-tree{background:#9fb08a}
+  .t-water{background:#a9c6d8}
+  .t-grave{background:#d6d2c6}
+  .t-fence{background:#b0894f}
+  .t-wall2{background:#8d8a80}
+  .t-fire{background:#e08a3c}
+  .mark{position:absolute;inset:1px;border-radius:3px;display:flex;align-items:center;
+        justify-content:center;font-size:10px;font-weight:500;color:#fff;cursor:grab}
+  .m-surface{background:var(--teal)}
+  .m-close{background:#3d6fa8}
+  .m-knowledge{background:#7a5aa8}
+  .mark.sel{outline:2px solid var(--coral);outline-offset:1px}
+  .npc{position:absolute;inset:1px;border-radius:50%;background:var(--amber);color:#fff;
+       display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;
+       box-shadow:0 0 0 1px #fff}
+  .wp{position:absolute;inset:7px;border-radius:50%;background:rgba(153,60,29,.55);pointer-events:none}
+  aside{width:340px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px}
+  aside h2{font-size:13px;font-weight:500;margin:0 0 10px;color:var(--muted)}
+  fieldset{border:0;padding:0;margin:0}
+  label{display:block;margin:8px 0 3px;color:var(--muted);font-size:12px}
+  input[type=text],input[type=number],textarea,select{width:100%;padding:5px 7px;
+       border:1px solid var(--line);border-radius:6px;background:#fdfcf9}
+  textarea{min-height:54px;resize:vertical;line-height:1.5}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  #issues{margin-top:10px;font-size:12px;color:var(--coral);max-height:110px;overflow:auto}
+  #issues div{padding:2px 0}
+  #status{padding:0 16px 16px;color:var(--muted);font-size:12px}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin-top:8px}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px}
+  .hint{color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px}
+  kbd{background:#f1efe8;border:1px solid var(--line);border-radius:3px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>举火 · 序章地图编辑器</h1>
+  <select id="hubSel"></select>
+  <button id="addBtn">点击地图放置新点</button>
+  <button id="valBtn">校验</button>
+  <button id="expBtn" class="primary">导出 CSV</button>
+  <span id="count" style="color:var(--muted)"></span>
+</header>
+<main>
+  <div id="stage"><div id="grid"></div>
+    <div class="legend">
+      <span><i style="background:#0f6e56"></i>明面</span>
+      <span><i style="background:#3d6fa8"></i>细看</span>
+      <span><i style="background:#7a5aa8"></i>知识门</span>
+      <span><i style="background:#ba7517;border-radius:50%"></i>NPC</span>
+      <span><i style="background:#993c1d;border-radius:50%"></i>巡逻路点</span>
+    </div>
+    <div class="hint">
+      <kbd>点击</kbd> 选中/放置 · <kbd>Delete</kbd> 删除选中点 · 改动即时校验，不会写回原文件
+    </div>
+  </div>
+  <aside>
+    <h2 id="inspTitle">未选中</h2>
+    <fieldset id="insp" disabled>
+      <div class="row">
+        <div><label>id</label><input type="text" id="f_id"></div>
+        <div><label>标记</label><input type="text" id="f_mark" maxlength="3"></div>
+      </div>
+      <div class="row">
+        <div><label>x</label><input type="number" id="f_x"></div>
+        <div><label>y</label><input type="number" id="f_y"></div>
+        <div><label>刻</label><input type="number" id="f_cost" step="0.5"></div>
+      </div>
+      <label>层级</label>
+      <select id="f_layer">
+        <option value="surface">surface 明面</option>
+        <option value="close">close 细看</option>
+        <option value="knowledge">knowledge 知识门</option>
+      </select>
+      <label>名称（不进游戏）</label><input type="text" id="f_name">
+      <label>前置旗标 requires</label><input type="text" id="f_requires">
+      <label>首次文本 text_once</label><textarea id="f_once"></textarea>
+      <label>重复文本 text_repeat（必填）</label><textarea id="f_repeat"></textarea>
+      <div class="row">
+        <div><label>产出 loot</label><input type="text" id="f_loot" placeholder="item:3|item2:1"></div>
+      </div>
+      <div class="row">
+        <div><label>旗标 set_flag</label><input type="text" id="f_flag"></div>
+        <div><label>监视 NPC</label><input type="text" id="f_watch" maxlength="1"></div>
+      </div>
+      <div style="margin-top:12px"><button id="delBtn" class="danger">删除此点</button></div>
+    </fieldset>
+    <div id="issues"></div>
+  </aside>
+</main>
+<div id="status"></div>
+<script>
+const DATA = {"hub1": {"name": "城南小院", "w": 18, "h": 10, "rows": ["##################", "#,,##########,,,,#", "#,,#,,,,,,,,#,,,,#", "#,,#,,,,,,,,#,,,,#", "#,,####+#####,,,,#", "######.....#####,#", "##,,,#.....#,,,#,#", "###+##.....##+##,#", "#................#", "##################"], "npcs": [], "patrol": []}, "hub2": {"name": "逃亡路·废驿", "w": 24, "h": 10, "rows": ["########################", "#,,,,,,,,########,TTTTT#", "#,,,,,,,,#,,,,,,#,TTTTT#", "#,,,,,,,,#,A,,,,#,TTTTT#", "#,,,,,,,,#,,,,,,#,####T#", "#,,,,,,,,#,,,,,,#,#,,#T#", "#,,,B,,,,###+####,#,,#,#", "#......................#", "#,,,,,,,,,,,,,,,,,,,,,,#", "########################"], "npcs": [{"id": "A", "name": "沈砚", "x": 12, "y": 4}, {"id": "B", "name": "老仆", "x": 5, "y": 7}], "patrol": []}, "hub3": {"name": "白幡村", "w": 34, "h": 22, "rows": ["##################################", "#,::::::::::,,,,,,,,,,,,,,,,,,,,,#", "#,::::::::::,,,,,,,,,,,,T,,TT,.,,#", "#,::::::::::,,,,,,,,,,,,,,,,,T.T,#", "#,,,,T,,,,,,,,,,,,,,,,,T,,T,,,.,,#", "#................................#", "#................................#", "#,,#####,#####,..,#####,,######,,#", "#,,#,,,#,#,,,#,..,#,,,#,,#,,,,#,,#", "#,,#,,,#,#,,,#,..,#,,,#,,#,,,,#,,#", "#,,#,,,#,#,,,#,..,#,,,#,,#,,,,#,,#", "#,,##+##,##+##,..,##+##,,###+##,,#", "#................................#", "#................................#", "#,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,#", "#,,^,^,,,,,,,,,..~,,,,,,,,,,,,,,,#", "#,,,^,,,,,,,,,,..,,,,,,,,,,,,,,,,#", "#................................#", "#................................#", "#,,,,,,,,,,,========,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,#", "##################################"], "npcs": [{"id": "A", "name": "陈三", "x": 6, "y": 14}, {"id": "B", "name": "老妇", "x": 13, "y": 10}, {"id": "C", "name": "游医", "x": 18, "y": 10}, {"id": "D", "name": "病人一", "x": 8, "y": 14}, {"id": "E", "name": "病人二", "x": 24, "y": 15}, {"id": "F", "name": "病人三", "x": 11, "y": 16}, {"id": "G", "name": "衙役甲", "x": 16, "y": 19}, {"id": "H", "name": "衙役乙", "x": 17, "y": 18}], "patrol": [{"id": "G", "loop": true, "wp": [[16, 19], [32, 19], [32, 6], [2, 6], [2, 19]]}, {"id": "H", "loop": true, "wp": [[17, 18], [17, 13]]}]}, "hub4": {"name": "县城", "w": 36, "h": 24, "rows": ["####################################", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,..,#########,,,,,,,#", "#,,######,,####,..,#,,,,,,,#,,####,#", "#,,#,,,,#,,#,,#,..,#,,,,,,,#,,#,,#,#", "#,,#,,,,#,,#,,#,..,#,,,,,,,#,,#,,#,#", "#,,#,,,,#,,#,,#,..,#,,,,,,,#,,#,,#,#", "#,,#,,,,#,,#,,#,..,#,,,,,,,#,,#,,#,#", "#,,##+###,,##+#,..,####+####,,##+#,#", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "#..................................#", "#..................................#", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "#,,########,,,,,..,,#######,,,,,,,,#", "#,,#,,,,,,#,,,,,..,,#,,,,,#,,,,,,,,#", "#,,#,,,,,,#,,,,,..,,#,,,,,#,,,,,,,,#", "#,,#,,,,,,#,,,,,..,,#,,,,,#,,,,,,,,#", "#,,#,,,,,,#,,,,,..,,#,,,,,#,,,,,,,,#", "#,,#,,,,,,#,,,,,..,,#,,,,,#,,,,,,,,#", "#,,###+####,,,,,..,,###+###,,,,,,,,#", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,..,,,,,,,,,,,,,,,,,#", "####################################"], "npcs": [{"id": "A", "name": "米铺老板", "x": 7, "y": 5}, {"id": "B", "name": "布商", "x": 14, "y": 5}, {"id": "C", "name": "县丞", "x": 25, "y": 5}, {"id": "D", "name": "师爷", "x": 32, "y": 6}, {"id": "E", "name": "掮客", "x": 25, "y": 18}, {"id": "F", "name": "乞丐", "x": 20, "y": 20}, {"id": "G", "name": "客栈掌柜", "x": 9, "y": 16}, {"id": "H", "name": "卖艺的", "x": 12, "y": 13}], "patrol": []}, "hub5": {"name": "山神庙", "w": 24, "h": 16, "rows": ["########################", "#^^^^^^,,,,,,,,,,,,,,,,#", "#^^^^^^,,,,##########,,#", "#^^^^^^,,,,#,,,,,,,,#,,#", "#^^^^^^,,,,#,,,,,,,,#,,#", "#,,,,,,,...#,,,,,,,,#,,#", "#,,,,,,,.,,#,,,,,,,,#,,#", "#,,,,,,,.,,#,,,,,,,,#,,#", "#,,,,,,,.,,#,,,,,,,,#,,#", "#,,,,,,,.,,#,,,,,,,,#,,#", "#,,,,,,,.,,####+#####,,#", "#,,,,,,,.,,,,,,,,,,,,,,#", "#........,,,,,,,,,,,,,,#", "#........,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,,,,,#", "########################"], "npcs": [{"id": "A", "name": "老鸦", "x": 14, "y": 6}, {"id": "B", "name": "庙祝", "x": 18, "y": 9}], "patrol": []}, "hub6": {"name": "官仓+破庙", "w": 30, "h": 14, "rows": ["##############################", "#,###########,,,,,##########,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#,,,,,,,,,#,..,,#,,,,,,,,#,#", "#,#####+#####,..,,####+#####,#", "#,,,,,,,,,,,,,..,,,,,,,,,,,,,#", "#............................#", "#,,,,,,,,,,,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,,,,,,,,,,,#", "##############################"], "npcs": [{"id": "A", "name": "使者·招安", "x": 21, "y": 7}, {"id": "B", "name": "使者·结盟", "x": 24, "y": 7}, {"id": "C", "name": "使者·合流", "x": 27, "y": 7}], "patrol": []}, "hub7": {"name": "城下营地", "w": 20, "h": 12, "rows": ["####################", "#WWWWWWWWWWWWWWWWW,#", "#WWWWWWWWWWWWWWWWW,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,X,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "#,,,,,,,,,,,,,,,,,,#", "####################"], "npcs": [{"id": "A", "name": "阿禾", "x": 6, "y": 6}, {"id": "B", "name": "沈砚", "x": 12, "y": 6}, {"id": "C", "name": "老鸦", "x": 5, "y": 9}, {"id": "D", "name": "柳三娘", "x": 14, "y": 9}, {"id": "E", "name": "玄真", "x": 8, "y": 10}, {"id": "F", "name": "裴无咎", "x": 11, "y": 10}, {"id": "G", "name": "小满", "x": 15, "y": 6}], "patrol": []}};
+const POINTS = [{"hub": "hub1", "id": "h1_01", "mark": "1", "x": 15, "y": 7, "layer": "surface", "name": "灶台", "requires": "", "text_once": "灶是凉的。锅底还剩半张饼，硬得像块瓦。", "text_repeat": "你把饼掰了一角，又放回去。", "loot": "bread:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_02", "mark": "2", "x": 6, "y": 3, "layer": "surface", "name": "书桌", "requires": "", "text_once": "桌上摊着那本册子。封皮是牛皮纸，磨得发亮。", "text_repeat": "你把手按在册子上。纸是凉的。", "loot": "", "set_flag": "sees_ledger", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_03", "mark": "3", "x": 12, "y": 3, "layer": "surface", "name": "柜子", "requires": "", "text_once": "柜里只有一件干净衣裳，和十四文钱。数了三遍才放进去。", "text_repeat": "衣裳叠得很整齐。你没有动它。", "loot": "coin:14|cloth:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_04", "mark": "4", "x": 5, "y": 7, "layer": "close", "name": "床下", "requires": "", "text_once": "床板下压着一把算盘。十三档，比民用的多一档——这是河工用的。", "text_repeat": "你没有再碰它。", "loot": "abacus:1", "set_flag": "has_abacus", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_05", "mark": "5", "x": 9, "y": 4, "layer": "close", "name": "书箱", "requires": "", "text_once": "书箱里没有书，只有一沓纸。最上面那张写了一半：『严大人台鉴』。", "text_repeat": "那半句话还停在那儿。", "loot": "letter_unsent:1", "set_flag": "has_letter_unsent", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_06", "mark": "6", "x": 9, "y": 7, "layer": "close", "name": "水缸", "requires": "", "text_once": "水面浮着一片灰。你把手伸进去，摸到一张当票。", "text_repeat": "水凉得刺骨。", "loot": "pawn_ticket:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_07", "mark": "7", "x": 17, "y": 7, "layer": "close", "name": "墙缝", "requires": "", "text_once": "墙缝里塞着一枚铜钱，方孔的边缘磨圆了。有人在这儿藏了很久。", "text_repeat": "墙缝空了。", "loot": "coin:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_08", "mark": "8", "x": 8, "y": 5, "layer": "surface", "name": "门框", "requires": "", "text_once": "门框上有一道刻痕，齐腰高。是量孩子身高的。", "text_repeat": "刻痕有三道，一道比一道高。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_09", "mark": "9", "x": 10, "y": 4, "layer": "surface", "name": "灯台", "requires": "", "text_once": "油灯还剩一指高的油。灯芯是新的。", "text_repeat": "灯花爆了一下。", "loot": "oil:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_e01", "mark": "e01", "x": 3, "y": 2, "layer": "surface", "name": "墙根", "requires": "", "text_once": "墙根的青苔。滑。", "text_repeat": "还是滑。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_e02", "mark": "e02", "x": 15, "y": 2, "layer": "surface", "name": "晾衣绳", "requires": "", "text_once": "晾衣绳。绳子还在，衣服没了。", "text_repeat": "风吹了一下绳子。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_e03", "mark": "e03", "x": 16, "y": 3, "layer": "surface", "name": "破席", "requires": "", "text_once": "一张破席。卷着，没打开。", "text_repeat": "你没有打开它。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_e04", "mark": "e04", "x": 17, "y": 8, "layer": "surface", "name": "柴灰", "requires": "", "text_once": "柴灰。冷的。", "text_repeat": "灰里有一小块没烧透的木炭。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub1", "id": "h1_e05", "mark": "e05", "x": 5, "y": 9, "layer": "surface", "name": "台阶", "requires": "", "text_once": "台阶。第三级裂了。", "text_repeat": "裂缝里长了一根草。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_01", "mark": "1", "x": 6, "y": 2, "layer": "surface", "name": "告示牌", "requires": "", "text_once": "通缉令。画上的人脸很胖，眼角还有一颗痣。你没有痣。", "text_repeat": "画像被风吹起一角，又落回去。", "loot": "", "set_flag": "saw_wanted_poster", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_02", "mark": "2", "x": 21, "y": 6, "layer": "close", "name": "马槽", "requires": "", "text_once": "槽底的草料结了块。你抠下来一把，还能喂马。", "text_repeat": "草料扎手。", "loot": "fodder:1", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_03", "mark": "3", "x": 20, "y": 6, "layer": "surface", "name": "老马", "requires": "", "text_once": "一匹老马，瘦得能看见肋骨。它看你的时候，眼睛很湿。", "text_repeat": "它把头低下去，又抬起来。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_04", "mark": "4", "x": 9, "y": 9, "layer": "close", "name": "井", "requires": "", "text_once": "井壁上有青苔，滑。井绳垂到水面，绳头打了个结。", "text_repeat": "绳子在你手里，很沉。", "loot": "rope:1", "set_flag": "has_rope", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_05", "mark": "5", "x": 15, "y": 3, "layer": "surface", "name": "柜台", "requires": "", "text_once": "柜台上的账本被雨泡过，字都晕了。只剩一个数字看得清：三百。", "text_repeat": "三百。你记住了这个数。", "loot": "", "set_flag": "saw_inn_ledger", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_06", "mark": "6", "x": 12, "y": 5, "layer": "surface", "name": "火堆", "requires": "", "text_once": "火堆还没灭。有人在火边坐了很久，地上的雪化了又冻。", "text_repeat": "火快熄了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_07", "mark": "7", "x": 16, "y": 4, "layer": "close", "name": "墙上的刻痕", "requires": "", "text_once": "墙上刻着很多道。你数了数，四十七道。有人在这儿等过四十七天。", "text_repeat": "四十七道。最后一道特别深。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_08", "mark": "8", "x": 20, "y": 7, "layer": "close", "name": "马鞍", "requires": "", "text_once": "一副马鞍搭在栏上，皮子裂了，缝还在。", "text_repeat": "鞍下的垫子里掉出一把草。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_09", "mark": "9", "x": 3, "y": 8, "layer": "surface", "name": "车辙", "requires": "", "text_once": "车辙很深，是重车。往北去的。", "text_repeat": "往北。北边是京城。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_0a", "mark": "a", "x": 7, "y": 9, "layer": "close", "name": "路边的鞋", "requires": "", "text_once": "一只鞋。男人的。鞋底磨穿了。", "text_repeat": "你没有捡它。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e01", "mark": "e01", "x": 3, "y": 2, "layer": "surface", "name": "枯叶", "requires": "", "text_once": "一片枯叶。踩上去很响。", "text_repeat": "你又踩了一下。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e02", "mark": "e02", "x": 8, "y": 4, "layer": "surface", "name": "积雪", "requires": "", "text_once": "雪。化了又冻，硬得像石头。", "text_repeat": "你跺了一脚，纹丝不动。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e03", "mark": "e03", "x": 11, "y": 6, "layer": "surface", "name": "草席", "requires": "", "text_once": "一张草席。有睡过的痕迹。", "text_repeat": "席子上有头发。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e04", "mark": "e04", "x": 17, "y": 8, "layer": "surface", "name": "木桩", "requires": "", "text_once": "路边的木桩，拴过马。", "text_repeat": "桩上有一圈勒痕。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e05", "mark": "e05", "x": 14, "y": 9, "layer": "surface", "name": "水洼", "requires": "", "text_once": "一个小水洼。映着天。", "text_repeat": "天上没有云。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub2", "id": "h2_e06", "mark": "e06", "x": 23, "y": 8, "layer": "surface", "name": "车辙尽头", "requires": "", "text_once": "车辙的尽头。再往前是雪，没有印子。", "text_repeat": "雪把路吃了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_01", "mark": "1", "x": 5, "y": 6, "layer": "close", "name": "米铺柜下", "requires": "", "text_once": "柜台底下扫出一小袋米。抓一把，一半是沙。", "text_repeat": "沙在指缝里漏下去。", "loot": "sand_rice:1", "set_flag": "has_sand_rice", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_02", "mark": "2", "x": 24, "y": 17, "layer": "surface", "name": "掮客货箱", "requires": "", "text_once": "箱子里有刀，有盐，还有一叠写了字的纸。掮客说是路引，你看不像。", "text_repeat": "箱子盖上了。掮客在看你。", "loot": "contraband:1", "set_flag": "", "watch_npc": "E", "cost": 1}, {"hub": "hub4", "id": "h4_03", "mark": "3", "x": 23, "y": 6, "layer": "close", "name": "官署廊下", "requires": "", "text_once": "廊柱后面塞着一本册子。翻开第一页，是县丞自己的名字。", "text_repeat": "你把它塞回去了。", "loot": "magistrate_ledger:1", "set_flag": "has_magistrate_ledger", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_04", "mark": "4", "x": 7, "y": 17, "layer": "close", "name": "客栈房间", "requires": "", "text_once": "枕头底下压着一把木梳。齿很密，是解泽的样式。", "text_repeat": "梳子上缠着一根头发。", "loot": "comb:1", "set_flag": "has_comb", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_05", "mark": "5", "x": 6, "y": 7, "layer": "surface", "name": "米缸", "requires": "", "text_once": "米缸见底了。缸壁上有一圈手印，是抓米抓出来的。", "text_repeat": "手印有很多层。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_06", "mark": "6", "x": 13, "y": 6, "layer": "surface", "name": "布庄的账", "requires": "", "text_once": "账上写着：『官绸二十匹，未收钱。』后面画了个圈。", "text_repeat": "那个圈画得很圆。", "loot": "", "set_flag": "saw_cloth_ledger", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_07", "mark": "7", "x": 24, "y": 8, "layer": "surface", "name": "堂前鼓", "requires": "", "text_once": "堂前的鼓。鼓面破了，槌不见了。", "text_repeat": "破了很久了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_08", "mark": "8", "x": 26, "y": 5, "layer": "close", "name": "县丞的椅子", "requires": "", "text_once": "椅背上搭着一件官袍。袖口磨白了。", "text_repeat": "袍子上有股香味。", "loot": "", "set_flag": "", "watch_npc": "C", "cost": 1}, {"hub": "hub4", "id": "h4_09", "mark": "9", "x": 32, "y": 7, "layer": "surface", "name": "师爷的笔", "requires": "", "text_once": "笔尖还是湿的。他刚写过字，墨是新的。", "text_repeat": "墨还没干透。", "loot": "", "set_flag": "", "watch_npc": "D", "cost": 1}, {"hub": "hub4", "id": "h4_0a", "mark": "a", "x": 9, "y": 17, "layer": "surface", "name": "客栈名册", "requires": "", "text_once": "住客名册。最后一行写着：『陆，一人，东仓来。』", "text_repeat": "那一行是你自己的字。", "loot": "", "set_flag": "saw_inn_register", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0b", "mark": "b", "x": 10, "y": 20, "layer": "close", "name": "客栈后门", "requires": "", "text_once": "后门通向一条窄巷。门闩是新换的。", "text_repeat": "门缝里透进风。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0c", "mark": "c", "x": 23, "y": 18, "layer": "close", "name": "黑市暗格", "requires": "", "text_once": "柜台下有个暗格，里面是盐引的残页。", "text_repeat": "残页只有半张。", "loot": "salt_note:1", "set_flag": "", "watch_npc": "E", "cost": 1}, {"hub": "hub4", "id": "h4_0d", "mark": "d", "x": 26, "y": 18, "layer": "surface", "name": "掮客的秤", "requires": "", "text_once": "秤砣被动过手脚。你一提，掮客就笑了。", "text_repeat": "他笑得很自然。", "loot": "", "set_flag": "", "watch_npc": "E", "cost": 1}, {"hub": "hub4", "id": "h4_0e", "mark": "e", "x": 19, "y": 20, "layer": "surface", "name": "乞丐的破碗", "requires": "", "text_once": "碗底刻着一个字。『漕』。", "text_repeat": "那个字被摸得很亮。", "loot": "", "set_flag": "", "watch_npc": "F", "cost": 1}, {"hub": "hub4", "id": "h4_0f", "mark": "f", "x": 11, "y": 13, "layer": "surface", "name": "琴匣", "requires": "", "text_once": "琴匣空着。匣盖内侧有一道抓痕。", "text_repeat": "抓痕很深。", "loot": "", "set_flag": "", "watch_npc": "H", "cost": 1}, {"hub": "hub4", "id": "h4_0g", "mark": "g", "x": 16, "y": 13, "layer": "close", "name": "告示墙", "requires": "", "text_once": "告示墙上贴过很多东西，一层压一层。", "text_repeat": "最上面那张是新的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0h", "mark": "h", "x": 30, "y": 12, "layer": "surface", "name": "街口的井", "requires": "", "text_once": "街口的井。井沿被磨得很亮。", "text_repeat": "井水很深。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0i", "mark": "i", "x": 33, "y": 12, "layer": "surface", "name": "车马行", "requires": "", "text_once": "车马行的木牌。写着『东去丰原，三日』。", "text_repeat": "三日。你算了算日子。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0j", "mark": "j", "x": 12, "y": 20, "layer": "surface", "name": "城隍庙香炉", "requires": "", "text_once": "香炉里插着三炷香，两长一短。", "text_repeat": "香烧到底了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_0k", "mark": "k", "x": 8, "y": 7, "layer": "surface", "name": "米铺的秤", "requires": "", "text_once": "秤杆是铜的，星点很密。", "text_repeat": "秤很准。准得让人不安。", "loot": "", "set_flag": "", "watch_npc": "A", "cost": 1}, {"hub": "hub4", "id": "h4_e01", "mark": "e01", "x": 3, "y": 11, "layer": "surface", "name": "墙角", "requires": "", "text_once": "墙角。有人在这儿撒过尿。", "text_repeat": "味道还在。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e02", "mark": "e02", "x": 15, "y": 11, "layer": "surface", "name": "一摊水", "requires": "", "text_once": "一摊水。倒映着招牌。", "text_repeat": "水里的字是反的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e03", "mark": "e03", "x": 29, "y": 11, "layer": "surface", "name": "脚印", "requires": "", "text_once": "一串脚印，往官署去了。", "text_repeat": "雪把脚印填了一半。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e04", "mark": "e04", "x": 3, "y": 14, "layer": "surface", "name": "垃圾", "requires": "", "text_once": "垃圾。菜叶、破碗、一只死老鼠。", "text_repeat": "老鼠很小。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e05", "mark": "e05", "x": 16, "y": 16, "layer": "surface", "name": "拴马桩", "requires": "", "text_once": "拴马桩。桩上有一圈勒痕。", "text_repeat": "勒痕很深。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e06", "mark": "e06", "x": 30, "y": 16, "layer": "surface", "name": "关着的门", "requires": "", "text_once": "一扇关着的门。敲了，没人应。", "text_repeat": "里面没有声音。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e07", "mark": "e07", "x": 34, "y": 13, "layer": "surface", "name": "煤渣", "requires": "", "text_once": "一堆煤渣。", "text_repeat": "还是热的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub4", "id": "h4_e08", "mark": "e08", "x": 9, "y": 23, "layer": "surface", "name": "南口石阶", "requires": "", "text_once": "南口的石阶。被人踩得发亮。", "text_repeat": "你在这儿站了一会儿。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_01", "mark": "1", "x": 5, "y": 4, "layer": "close", "name": "旧战场骸骨", "requires": "", "text_once": "骸骨上有箭孔。旁边压着一枚腰牌，写着『队正赵』。", "text_repeat": "你把腰牌擦干净了。", "loot": "token:1", "set_flag": "has_token", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_02", "mark": "2", "x": 16, "y": 5, "layer": "surface", "name": "神像", "requires": "", "text_once": "神像的头断了，供在脚边。断口很新——是被人砸的，不是塌的。", "text_repeat": "神像的眼睛是空的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_03", "mark": "3", "x": 19, "y": 5, "layer": "surface", "name": "香炉", "requires": "", "text_once": "香炉里的灰是满的。有人在这儿烧过很多东西。", "text_repeat": "灰是温的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_04", "mark": "4", "x": 14, "y": 9, "layer": "close", "name": "庙祝床下", "requires": "", "text_once": "床下有一本书，书页被油浸透了。是兵书。", "text_repeat": "书角被人反复翻过。", "loot": "book:1", "set_flag": "has_book", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_05", "mark": "5", "x": 15, "y": 8, "layer": "surface", "name": "逃兵的火堆", "requires": "", "text_once": "火堆边围了五个位置。草被压平了。", "text_repeat": "一个人也没回来。", "loot": "", "set_flag": "", "watch_npc": "A", "cost": 1}, {"hub": "hub5", "id": "h5_06", "mark": "6", "x": 17, "y": 4, "layer": "close", "name": "神像的断手", "requires": "", "text_once": "神像的手掉在地上，手指还捏着一个印诀。", "text_repeat": "你没有碰它。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_07", "mark": "7", "x": 18, "y": 4, "layer": "surface", "name": "香案", "requires": "", "text_once": "香案上有一层灰。灰上有指印，很小，像是孩子的。", "text_repeat": "指印被风吹淡了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_08", "mark": "8", "x": 15, "y": 4, "layer": "close", "name": "庙顶的洞", "requires": "", "text_once": "屋顶破了个洞，雪从洞里落下来，落在神像脸上。", "text_repeat": "雪还在落。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_09", "mark": "9", "x": 20, "y": 7, "layer": "surface", "name": "兵器架", "requires": "", "text_once": "木架上插着七支枪，三支有枪头。", "text_repeat": "枪杆上都有手汗的印子。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_0a", "mark": "a", "x": 14, "y": 7, "layer": "close", "name": "逃兵名册", "requires": "", "text_once": "一块布，用炭写着名字。十三个，划掉了四个。", "text_repeat": "最后一个名字是新划的。", "loot": "", "set_flag": "", "watch_npc": "A", "cost": 1}, {"hub": "hub5", "id": "h5_e01", "mark": "e01", "x": 10, "y": 2, "layer": "surface", "name": "枯草", "requires": "", "text_once": "枯草。被踩倒了一片。", "text_repeat": "草底下是泥。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_e02", "mark": "e02", "x": 3, "y": 12, "layer": "surface", "name": "破碗", "requires": "", "text_once": "一个破碗。碗里有雨水。", "text_repeat": "水是浑的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_e03", "mark": "e03", "x": 20, "y": 13, "layer": "surface", "name": "石墩", "requires": "", "text_once": "庙外的石墩。上面刻着字，磨平了。", "text_repeat": "只认出一个『天』字。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_e04", "mark": "e04", "x": 8, "y": 15, "layer": "surface", "name": "一条狗", "requires": "", "text_once": "一条狗。它看了你一眼，走了。", "text_repeat": "它没有叫。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub5", "id": "h5_e05", "mark": "e05", "x": 22, "y": 8, "layer": "surface", "name": "松树", "requires": "", "text_once": "松树。树皮被剥了一块。", "text_repeat": "剥口是新的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_01", "mark": "1", "x": 5, "y": 8, "layer": "close", "name": "仓底", "requires": "", "text_once": "仓底有一层谷子，混着土。你抓了一把，谷子是好的。", "text_repeat": "谷子从指缝里漏下去。", "loot": "grain:300", "set_flag": "has_grain", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_02", "mark": "2", "x": 12, "y": 3, "layer": "knowledge", "name": "墙上的刻字", "requires": "has_letter_unsent", "text_once": "墙上有一行刻字，很浅：『大晟一百九十五年，陆文昭到此。』", "text_repeat": "那一行字被你的手摸亮了。", "loot": "", "set_flag": "knows_lu_wenzhao", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_03", "mark": "3", "x": 26, "y": 7, "layer": "close", "name": "佛像后", "requires": "", "text_once": "佛像背后塞着一封信。火漆是太师府的印。", "text_repeat": "信还在你手里。", "loot": "letter_yan:1", "set_flag": "has_letter_yan", "watch_npc": "C", "cost": 1}, {"hub": "hub6", "id": "h6_04", "mark": "4", "x": 8, "y": 9, "layer": "surface", "name": "仓门", "requires": "", "text_once": "门是新锁的。锁眼里塞着蜡。", "text_repeat": "蜡还是软的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_05", "mark": "5", "x": 7, "y": 8, "layer": "surface", "name": "谷堆", "requires": "", "text_once": "墙角的谷子堆。三百石，就这么多。", "text_repeat": "三百石。账上写的是三万。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_06", "mark": "6", "x": 9, "y": 7, "layer": "close", "name": "死老鼠", "requires": "", "text_once": "一只死老鼠，很瘦。它是饿死的——死在一个空仓里。", "text_repeat": "它还是那个姿势。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_07", "mark": "7", "x": 11, "y": 5, "layer": "surface", "name": "空账", "requires": "", "text_once": "桌上有一本空账。每一页都写着『如数』。", "text_repeat": "每一页都是『如数』。", "loot": "", "set_flag": "saw_fake_ledger", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_08", "mark": "8", "x": 23, "y": 9, "layer": "surface", "name": "庙门槛", "requires": "", "text_once": "门槛上有一道刀痕，很深。", "text_repeat": "刀痕里积了灰。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_09", "mark": "9", "x": 25, "y": 5, "layer": "close", "name": "佛脚", "requires": "", "text_once": "佛脚上落了一层灰。灰上有一枚指印，是新的。", "text_repeat": "指印很小。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_e01", "mark": "e01", "x": 2, "y": 3, "layer": "surface", "name": "断绳", "requires": "", "text_once": "一截断绳。断口是磨的。", "text_repeat": "绳子很短。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_e02", "mark": "e02", "x": 14, "y": 5, "layer": "surface", "name": "碎砖", "requires": "", "text_once": "碎砖。堆得很整齐，像是有人码过。", "text_repeat": "码得很用心。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_e03", "mark": "e03", "x": 16, "y": 10, "layer": "surface", "name": "黑水", "requires": "", "text_once": "一滩黑水。踩上去有声音。", "text_repeat": "声音很响。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub6", "id": "h6_e04", "mark": "e04", "x": 28, "y": 11, "layer": "surface", "name": "墙根草", "requires": "", "text_once": "墙根下的草，枯了。", "text_repeat": "草还是枯的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub7", "id": "h7_01", "mark": "1", "x": 4, "y": 5, "layer": "surface", "name": "雪地脚印", "requires": "", "text_once": "一串脚印，从篝火那边过来，往城墙的方向去了。走到一半，没了。", "text_repeat": "脚印没有尽头。", "loot": "", "set_flag": "saw_footprints", "watch_npc": "", "cost": 1}, {"hub": "hub7", "id": "h7_e01", "mark": "e01", "x": 9, "y": 4, "layer": "surface", "name": "雪", "requires": "", "text_once": "雪。很厚。", "text_repeat": "你踩了一个坑。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub7", "id": "h7_e02", "mark": "e02", "x": 17, "y": 8, "layer": "surface", "name": "半截柴", "requires": "", "text_once": "一截烧了一半的柴。", "text_repeat": "柴是冷的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub7", "id": "h7_e03", "mark": "e03", "x": 7, "y": 11, "layer": "surface", "name": "冻马粪", "requires": "", "text_once": "冻硬的马粪。", "text_repeat": "你没有碰。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub7", "id": "h7_e04", "mark": "e04", "x": 12, "y": 4, "layer": "surface", "name": "城墙影子", "requires": "", "text_once": "城墙的影子。很长。", "text_repeat": "影子没有动。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_01", "mark": "1", "x": 13, "y": 19, "layer": "surface", "name": "村口白幡", "requires": "", "text_once": "村口的竹竿上挂着十一根白幡。风一吹，它们不是一起动，是一根一根地动。你数了两遍。", "text_repeat": "你又数了一遍。还是十一根。", "loot": "", "set_flag": "knows_11_banner", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_02", "mark": "2", "x": 20, "y": 19, "layer": "surface", "name": "封村告示", "requires": "", "text_once": "木牌上贴着官府的告示，字很大，糊得很急。日期是九天前。落款是县衙，盖的却是仓曹的印——管粮的人，管了封村的事。", "text_repeat": "你把告示上的日期又看了一遍。九天。", "loot": "", "set_flag": "intel_seal_order", "watch_npc": "H", "cost": 1}, {"hub": "hub3", "id": "bf_03", "mark": "3", "x": 6, "y": 3, "layer": "surface", "name": "荒田", "requires": "", "text_once": "稻子熟了，没人割。谷粒掉在泥里，已经发了芽。今年的收成，就烂在这片地里。", "text_repeat": "稻子还在那儿。没有人来收。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_04", "mark": "4", "x": 10, "y": 4, "layer": "close", "name": "半只犁", "requires": "", "text_once": "犁头断在泥里，只剩半个。断口是新的——有人用它砸过什么东西。或者砸过什么人。", "text_repeat": "你没有再碰它。", "loot": "iron:2", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_05", "mark": "5", "x": 4, "y": 16, "layer": "surface", "name": "大坟", "requires": "", "text_once": "碑是新刻的，字很浅。『陈门李氏之墓』。旁边有一行小字，被雨冲淡了，你只认出两个字：饿死。", "text_repeat": "那两个字还在。饿死。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_06", "mark": "6", "x": 6, "y": 16, "layer": "close", "name": "小坟", "requires": "", "text_once": "最小的一座坟，只有三尺长。坟前放着一只鞋，鞋头朝里——这是叫孩子回家的意思。", "text_repeat": "鞋还在。鞋头还是朝里。", "loot": "", "set_flag": "knows_shoe_inward", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_07", "mark": "7", "x": 19, "y": 16, "layer": "surface", "name": "井台木桶", "requires": "", "text_once": "桶底结着一层药渣，干在木头上，刮都刮不掉。有人在这里洗过很多次药罐。", "text_repeat": "桶还是那个桶。药渣还是那些药渣。", "loot": "", "set_flag": "", "watch_npc": "G", "cost": 1}, {"hub": "hub3", "id": "bf_08", "mark": "8", "x": 18, "y": 15, "layer": "close", "name": "井里", "requires": "", "text_once": "井不深。水面上浮着一只鞋。你把它捞上来，鞋很小，是给四五岁孩子穿的。另一只不在水里。", "text_repeat": "你又看了一眼井里。什么都没有了。", "loot": "shoe:1", "set_flag": "has_shoe", "watch_npc": "G", "cost": 1}, {"hub": "hub3", "id": "bf_09", "mark": "9", "x": 6, "y": 13, "layer": "surface", "name": "陈家门槛", "requires": "", "text_once": "门槛上有一圈干了的药渍，黑的。陈三就坐在它旁边，一只手还在摇。", "text_repeat": "他没有看你。他一直在摇。", "loot": "", "set_flag": "", "watch_npc": "A", "cost": 1}, {"hub": "hub3", "id": "bf_0a", "mark": "a", "x": 5, "y": 10, "layer": "surface", "name": "陈家灶台", "requires": "", "text_once": "锅是空的，锅底一层白灰。你伸手摸了一下，凉的。凉了很久了。", "text_repeat": "还是凉的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0b", "mark": "b", "x": 12, "y": 13, "layer": "close", "name": "老妇家门前", "requires": "", "text_once": "门前摆着一双男人的鞋，鞋头朝外，摆得很整齐。屋里没有男人。", "text_repeat": "鞋还在。她每天都会摆一次。", "loot": "", "set_flag": "", "watch_npc": "B", "cost": 1}, {"hub": "hub3", "id": "bf_0c", "mark": "c", "x": 11, "y": 10, "layer": "surface", "name": "老妇家灶", "requires": "", "text_once": "锅里煮着水。水开了，她没管。她坐在灶前，看着火。", "text_repeat": "水快烧干了。她还是没有管。", "loot": "", "set_flag": "", "watch_npc": "B", "cost": 1}, {"hub": "hub3", "id": "bf_0d", "mark": "d", "x": 21, "y": 10, "layer": "surface", "name": "空屋桌上", "requires": "", "text_once": "桌上有半封信，写到一半停了。『儿在县里做事，一切都好，勿念。』落款处的墨还没干透——可这封信写了九天。", "text_repeat": "那半封信还在桌上。没有人回来写完它。", "loot": "letter:1", "set_flag": "has_letter", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0e", "mark": "e", "x": 22, "y": 11, "layer": "close", "name": "空屋床下", "requires": "", "text_once": "床下有个木匣，上了锁。锁是新的。你没有钥匙，但你有一把刀。", "text_repeat": "匣子开着。里面空了。", "loot": "deed:1", "set_flag": "has_deed", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0f", "mark": "f", "x": 18, "y": 11, "layer": "surface", "name": "药柜", "requires": "", "text_once": "十二个抽屉，九个是空的。剩下三个里，一共三剂药。包药的纸上写着：一日两次，不可多服。", "text_repeat": "抽屉都拉开了。你数过了，没有第四剂。", "loot": "medicine:3", "set_flag": "has_medicine", "watch_npc": "C", "cost": 1}, {"hub": "hub3", "id": "bf_0g", "mark": "g", "x": 18, "y": 12, "layer": "close", "name": "药柜下", "requires": "", "text_once": "柜子底下塞着一个布包，打开是香灰。很多香灰。有人把香灰当药卖。", "text_repeat": "布包被你翻乱了。香灰撒了一点在地上。", "loot": "ash:1", "set_flag": "has_ash", "watch_npc": "C", "cost": 1}, {"hub": "hub3", "id": "bf_0h", "mark": "h", "x": 29, "y": 13, "layer": "surface", "name": "祠堂门槛", "requires": "", "text_once": "祠堂的门槛比别处低很多，中间磨出一个凹。这是很多人跪出来的。", "text_repeat": "那个凹还在。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0i", "mark": "i", "x": 29, "y": 10, "layer": "close", "name": "祠堂供桌", "requires": "", "text_once": "供桌下有本族谱，纸都脆了。你翻到中间一页，看见一行字——『大晟一百八十七年，河工陆文昭督修此堤。』", "text_repeat": "那一页被你翻开着。你没有合上。", "loot": "", "set_flag": "knows_lu_wenzhao", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0j", "mark": "j", "x": 27, "y": 9, "layer": "surface", "name": "祠堂香炉", "requires": "", "text_once": "香炉里的灰是满的。你拨了拨，拨出三枚铜钱，都是新的。有人刚来过。", "text_repeat": "灰被你拨乱了。你没有再拨。", "loot": "coin:3", "set_flag": "took_temple_coin", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_0k", "mark": "k", "x": 31, "y": 3, "layer": "knowledge", "name": "后山入口", "requires": "knows_herb_path", "text_once": "一条小路，被荆棘挡着。你不知道它通向哪里。", "text_repeat": "荆棘后面是黑的。", "loot": "", "set_flag": "path_backhill_open", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e01", "mark": "e01", "x": 3, "y": 5, "layer": "surface", "name": "柴堆", "requires": "", "text_once": "一堆柴。抽出一根，下面还是柴。", "text_repeat": "还是柴。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e02", "mark": "e02", "x": 16, "y": 17, "layer": "surface", "name": "碎瓦", "requires": "", "text_once": "碎瓦。底下什么都没有。", "text_repeat": "你刚才翻过了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e03", "mark": "e03", "x": 22, "y": 16, "layer": "surface", "name": "干草", "requires": "", "text_once": "干草。扎手。你把手缩回来。", "text_repeat": "手背上有一道红印。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e04", "mark": "e04", "x": 28, "y": 17, "layer": "surface", "name": "破筐", "requires": "", "text_once": "破筐。筐底有一个洞，洞的形状像一只脚。", "text_repeat": "你把手伸进去，摸到了底。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e05", "mark": "e05", "x": 30, "y": 15, "layer": "surface", "name": "泥坑", "requires": "", "text_once": "泥坑。里面有一只鞋印，很小。", "text_repeat": "鞋印被你的脚印盖住了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e06", "mark": "e06", "x": 7, "y": 20, "layer": "surface", "name": "车辙", "requires": "", "text_once": "车辙。很深的两道。有人推着车走了，没回来。", "text_repeat": "车辙里积了水。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e07", "mark": "e07", "x": 25, "y": 11, "layer": "surface", "name": "空坛", "requires": "", "text_once": "空坛。闻着有酒味，是很多年前的酒味。", "text_repeat": "酒味淡了。是你的鼻子习惯了。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e08", "mark": "e08", "x": 15, "y": 3, "layer": "surface", "name": "田角", "requires": "", "text_once": "田角。有人在这里插过一根竹竿，竿子没了，洞还在。", "text_repeat": "那个洞被土填了一半。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}, {"hub": "hub3", "id": "bf_e09", "mark": "e09", "x": 2, "y": 7, "layer": "surface", "name": "路边石", "requires": "", "text_once": "路边的石头。被坐得很光滑。", "text_repeat": "石头是凉的。", "loot": "", "set_flag": "", "watch_npc": "", "cost": 1}];
+const T = {'#':'t-wall','+':'t-door','.':'t-road',',':'t-grass',':':'t-field','T':'t-tree',
+           '~':'t-water','^':'t-grave','=':'t-fence','W':'t-wall2','X':'t-fire'};
+const WALK = new Set(['.',':',',','+','^']);
+
+let hub = 'hub3';
+let sel = null;      // point id
+let addMode = false;
+
+const $ = id => document.getElementById(id);
+
+function initHubSel(){
+  const s = $('hubSel');
+  Object.entries(DATA).forEach(([k,v])=>{
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k + ' ' + v.name + '（'+v.w+'×'+v.h+'）';
+    s.appendChild(o);
+  });
+  s.value = hub;
+  s.onchange = ()=>{ hub = s.value; sel = null; render(); };
+}
+
+function pointAt(x,y){
+  return POINTS.find(p=>p.hub===hub && p.x===x && p.y===y);
+}
+
+function render(){
+  const d = DATA[hub];
+  const g = $('grid');
+  g.style.gridTemplateColumns = `repeat(${d.w}, 20px)`;
+  g.innerHTML = '';
+  const wpSet = new Set();
+  (d.patrol||[]).forEach(p=>p.wp.forEach(([x,y])=>wpSet.add(x+','+y)));
+  const npcAt = {};
+  (d.npcs||[]).forEach(n=>npcAt[n.x+','+n.y]=n);
+
+  for(let y=1;y<=d.h;y++){
+    for(let x=1;x<=d.w;x++){
+      const ch = d.rows[y-1][x-1];
+      const c = document.createElement('div');
+      c.className = 'cell ' + (T[ch]||'t-grass');
+      c.dataset.x = x; c.dataset.y = y;
+      const p = pointAt(x,y);
+      if(p){
+        const m = document.createElement('span');
+        m.className = 'mark m-' + p.layer + (sel===p.id?' sel':'');
+        m.textContent = p.mark;
+        c.appendChild(m);
+      }
+      if(npcAt[x+','+y]){
+        const n = document.createElement('span');
+        n.className='npc'; n.textContent = npcAt[x+','+y].id;
+        c.appendChild(n);
+      } else if(wpSet.has(x+','+y)){
+        const w = document.createElement('span'); w.className='wp'; c.appendChild(w);
+      }
+      c.onclick = ()=>onCell(x,y,ch);
+      g.appendChild(c);
+    }
+  }
+  $('count').textContent = POINTS.filter(p=>p.hub===hub).length + ' 条 / 本关';
+  validate();
+  if(sel) fillInspector(POINTS.find(p=>p.id===sel)); else clearInspector();
+}
+
+function onCell(x,y,ch){
+  const p = pointAt(x,y);
+  if(p){ sel = p.id; render(); return; }
+  if(!addMode) return;
+  if(!WALK.has(ch)){ alert('这一格不可通行（'+ch+'），不能放点。'); return; }
+  const n = POINTS.filter(q=>q.hub===hub).length + 1;
+  const id = hub + '_n' + String(n).padStart(2,'0');
+  const np = {hub, id, mark:'+', x, y, layer:'surface', name:'新点',
+              requires:'', text_once:'', text_repeat:'', loot:'', set_flag:'', watch_npc:'', cost:1};
+  POINTS.push(np); sel = id; addMode = false;
+  $('addBtn').classList.remove('primary');
+  render();
+}
+
+function clearInspector(){
+  $('inspTitle').textContent = '未选中';
+  $('insp').disabled = true;
+  ['f_id','f_mark','f_x','f_y','f_cost','f_name','f_requires','f_once','f_repeat','f_loot','f_flag','f_watch']
+    .forEach(k=>$(k).value='');
+}
+function fillInspector(p){
+  if(!p){ clearInspector(); return; }
+  $('inspTitle').textContent = p.id + '（' + p.layer + '）';
+  $('insp').disabled = false;
+  $('f_id').value=p.id; $('f_mark').value=p.mark;
+  $('f_x').value=p.x; $('f_y').value=p.y; $('f_cost').value=p.cost;
+  $('f_layer').value=p.layer; $('f_name').value=p.name;
+  $('f_requires').value=p.requires; $('f_once').value=p.text_once;
+  $('f_repeat').value=p.text_repeat; $('f_loot').value=p.loot;
+  $('f_flag').value=p.set_flag; $('f_watch').value=p.watch_npc;
+}
+
+function bind(){
+  const map = {f_id:'id',f_mark:'mark',f_x:'x',f_y:'y',f_cost:'cost',f_layer:'layer',
+               f_name:'name',f_requires:'requires',f_once:'text_once',f_repeat:'text_repeat',
+               f_loot:'loot',f_flag:'set_flag',f_watch:'watch_npc'};
+  Object.entries(map).forEach(([el,key])=>{
+    $(el).oninput = ()=>{
+      const p = POINTS.find(q=>q.id===sel); if(!p) return;
+      let v = $(el).value;
+      if(['x','y','cost'].includes(key)) v = Number(v)||0;
+      p[key] = v;
+      if(key==='id'){ sel = v; }
+      if(['x','y','mark','layer'].includes(key)){ render(); } else { validate(); }
+    };
+  });
+  $('delBtn').onclick = ()=>{
+    const i = POINTS.findIndex(q=>q.id===sel);
+    if(i<0) return;
+    if(!confirm('删除 ' + sel + '？')) return;
+    POINTS.splice(i,1); sel=null; render();
+  };
+  $('addBtn').onclick = ()=>{
+    addMode = !addMode;
+    $('addBtn').classList.toggle('primary', addMode);
+  };
+  $('valBtn').onclick = validate;
+  $('expBtn').onclick = exportCSV;
+  document.addEventListener('keydown', e=>{
+    if(e.key==='Delete' && sel){ $('delBtn').click(); }
+  });
+}
+
+function validate(){
+  const box = $('issues'); box.innerHTML='';
+  const errs = [];
+  const seen = new Set();
+  POINTS.forEach(p=>{
+    if(seen.has(p.id)) errs.push(p.id + '：id 重复');
+    seen.add(p.id);
+    const d = DATA[p.hub]; if(!d) return;
+    if(p.x<1||p.x>d.w||p.y<1||p.y>d.h) errs.push(p.id+'：坐标越界');
+    else if(!WALK.has(d.rows[p.y-1][p.x-1])) errs.push(p.id+'：落在不可通行格（'+(d.rows[p.y-1][p.x-1])+'）');
+    if(!p.text_repeat || !p.text_repeat.trim()) errs.push(p.id+'：text_repeat 为空');
+    if(p.layer==='knowledge' && !p.requires) errs.push(p.id+'：知识门缺 requires');
+  });
+  const pos = {};
+  POINTS.forEach(p=>{
+    const k = p.hub+':'+p.x+','+p.y;
+    if(pos[k]) errs.push(p.id+'：与 '+pos[k]+' 同格');
+    else pos[k] = p.id;
+  });
+  errs.forEach(t=>{ const d=document.createElement('div'); d.textContent='· '+t; box.appendChild(d); });
+  $('status').textContent = errs.length ? ('校验：'+errs.length+' 个问题') : '校验通过：0 个问题';
+  return errs;
+}
+
+function q(s){ return '"' + String(s==null?'':s).replace(/"/g,'""') + '"'; }
+function exportCSV(){
+  const errs = validate();
+  if(errs.length && !confirm('还有 '+errs.length+' 个问题，仍要导出吗？')) return;
+  const cols = ['hub','id','mark','x','y','layer','name','requires',
+                'text_once','text_repeat','loot','set_flag','watch_npc','cost'];
+  const lines = [cols.join(',')];
+  POINTS.forEach(p=>{ lines.push(cols.map(c=>q(p[c])).join(',')); });
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '举火_序章数据_全关卡_v1.2.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+initHubSel(); bind(); render();
+</script>
+</body>
+</html>

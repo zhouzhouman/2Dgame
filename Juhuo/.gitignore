@@ -1,0 +1,29 @@
+# Godot 4 C#
+.godot/
+.mono/
+data_*/
+*.translation
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# 导出产物
+Builds/
+*.exe
+*.pck
+!export_presets.cfg
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
+
+# 临时截图
+shot.png

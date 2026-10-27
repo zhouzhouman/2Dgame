@@ -1,0 +1,17 @@
+# 构建产物与缓存
+Juhuo/.godot/
+**/bin/
+**/obj/
+**/__pycache__/
+*.pyc
+
+# 本机与临时文件
+*.user
+*.suo
+.vs/
+.idea/
+Juhuo/shot.png
+*.log
+
+# 工作区记忆（本地，不进仓库）
+.workbuddy/

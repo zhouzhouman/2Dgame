@@ -1,0 +1,20 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AssemblyName>Juhuo</AssemblyName>
+    <RootNamespace>Juhuo</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Godot 的默认通配会把子项目的源码也吃进来，必须排除 -->
+  <ItemGroup>
+    <Compile Remove="Src/Core/**/*.cs" />
+    <Compile Remove="Src/Application/**/*.cs" />
+    <Compile Remove="Tests/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Src/Core/Core.csproj" />
+    <ProjectReference Include="Src/Application/Application.csproj" />
+  </ItemGroup>
+</Project>

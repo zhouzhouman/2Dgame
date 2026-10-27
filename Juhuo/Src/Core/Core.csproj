@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Juhuo.Core</AssemblyName>
+    <RootNamespace>Juhuo.Core</RootNamespace>
+  </PropertyGroup>
+
+  <!-- 硬规定：这里不允许出现 Godot 引用。CI 会检查。 -->
+</Project>

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://ec35hacxuj5j"
+
+[deps]
+
+files=["res://Content/data/points.id.translation", "res://Content/data/points.mark.translation", "res://Content/data/points.x.translation", "res://Content/data/points.y.translation", "res://Content/data/points.layer.translation", "res://Content/data/points.name.translation", "res://Content/data/points.requires.translation", "res://Content/data/points.text.translation", "res://Content/data/points.text.translation", "res://Content/data/points.loot.translation", "res://Content/data/points.set.translation", "res://Content/data/points.watch.translation", "res://Content/data/points.cost.translation"]
+
+source_file="res://Content/data/points.csv"
+dest_files=["res://Content/data/points.id.translation", "res://Content/data/points.mark.translation", "res://Content/data/points.x.translation", "res://Content/data/points.y.translation", "res://Content/data/points.layer.translation", "res://Content/data/points.name.translation", "res://Content/data/points.requires.translation", "res://Content/data/points.text.translation", "res://Content/data/points.text.translation", "res://Content/data/points.loot.translation", "res://Content/data/points.set.translation", "res://Content/data/points.watch.translation", "res://Content/data/points.cost.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true
