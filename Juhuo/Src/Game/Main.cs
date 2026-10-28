@@ -1035,14 +1035,15 @@ public partial class Main : Node2D
     // ————————————————————————— 开发辅助 —————————————————————————
 
     /// <summary>
-    /// 数据自检：每一关的每一件东西，四周必须有至少一个能站人的格子够得着。
+    /// 数据自检：每一关的每一件东西，四周必须有至少一个"站得住、而且从起点走得到"的格子。
     /// 只报"够不着"——那是玩家真的会卡住的地方，比任何截图都可靠。
     ///
-    /// 这里是"只看局部"的口径（点周围八格有人站得住）。
-    /// Core 的 <see cref="ReachAudit"/> 更严（还要求那格从起点走得到），
-    /// 换上去之后 hub4 会报 h4_03 / h4_08 两件——那是真的够不着，
-    /// 但不是这张票能修的（点位归 D3、地图归 D3），所以先留在旧口径，
-    /// 等 hub4 的屋子通了再一行切过去。详见交接单。
+    /// 判定只有一份实现：Core 的 <see cref="ReachAudit"/>（票号 S1-DIALOG-b）。
+    /// 这里只做三件事：读地图、给起点、给"这格是不是被物件占着"的谓词。
+    /// 以前 Main 自己写了一份只看局部的老口径，和 Core 那份迟早会漂，已经删掉。
+    ///
+    /// 坐标口径：<c>SearchPoint</c> 与 <c>ReachAudit</c> 都是 1-based，
+    /// 减一只发生在 <see cref="MapGrid.WalkableCell"/> 内部——这里一次都不换算。
     /// </summary>
     private void AuditReach()
     {
@@ -1052,24 +1053,34 @@ public partial class Main : Node2D
 
         foreach (var hub in order)
         {
-            _world.Load(hub);
-            var local = 0;
+            var map = MapGrid.Load(ProjectSettings.GlobalizePath($"res://Content/maps/{hub}.txt"));
+            var points = _table.ForHub(hub).ToList();
+            var spawn = SceneConfig.Of(hub).Spawn;
 
-            foreach (var p in _world.Props)
-            {
-                total++;
-                if (_world.CanReach(p)) continue;
+            var report = ReachAudit.Run(
+                map,
+                points,
+                Mathf.RoundToInt(spawn.X),
+                Mathf.RoundToInt(spawn.Y),
+                BlocksHere);
 
-                bad++;
-                local++;
-                GD.Print($"[够不着] {hub} {p.Point.Id} {p.Point.Name} ({p.Cell.X},{p.Cell.Y})");
-            }
+            foreach (var p in report.Unreachable)
+                GD.Print($"[够不着] {hub} {p.Id} {p.Name} ({p.X},{p.Y})");
 
-            GD.Print($"[自检] {hub}：{_world.Props.Count} 件，其中够不着 {local} 件");
+            GD.Print($"[自检] {hub}：{report.Total} 件，其中够不着 {report.Unreachable.Count} 件");
+
+            total += report.Total;
+            bad += report.Unreachable.Count;
         }
 
         GD.Print($"[自检] 合计 {total} 件，够不着 {bad} 件");
     }
+
+    /// <summary>
+    /// 这件东西挡不挡路：名字 → 原型 → 挡不挡。规则本身只在 <see cref="PropKinds"/> 里有一份，
+    /// 与 <c>World.PropBlocks</c> 同一口径，这里不另写判断。
+    /// </summary>
+    private static bool BlocksHere(SearchPoint p) => PropKinds.Blocks(PropKinds.Of(p.Name));
 
     /// <summary>
     /// --touch：随便找一件东西，站到它的斜角上按一次 E。

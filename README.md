@@ -78,7 +78,11 @@ python tools/validate.py --selftest  # 证明五类错都能被报出
 python tools/sim_balance.py          # 30 年经济模拟与战斗推演
 ```
 
-改内容要改 `tools/gen_prologue_data.py` 再重新生成。**直接改 `Content/data/*.csv` 会被下次生成覆盖**，历史上出过一次同格重叠。
+`tools/gen_prologue_data.py` 负责生成 `举火_序章数据_全关卡_v1.1.csv`（文档与校对用）。
+
+> **注意（2026-10-28 实测）**：生成器**目前不写**游戏读的 `Juhuo/Content/data/points.csv`——那份仍是手工维护，
+> 两份数据没有同步脚本。改动点位时**两边都要改**，否则会出现"文档对、游戏错"。
+> 这是一条已知缺陷（`QA/bugs/Q-014.md`），修法是让生成器直写游戏 CSV 并加一致性校验。
 
 ---
 

@@ -571,26 +571,8 @@ public sealed class World
         return CellWalkable(px + sx, py) || CellWalkable(px, py + sy);
     }
 
-    /// <summary>这件东西有没有任何一个能站人的格子够得着。数据自检用。</summary>
-    public bool CanReach(Interactable p)
-    {
-        var cx = Mathf.RoundToInt(p.Cell.X);
-        var cy = Mathf.RoundToInt(p.Cell.Y);
-
-        for (var dy = -1; dy <= 1; dy++)
-        for (var dx = -1; dx <= 1; dx++)
-        {
-            if (dx == 0 && dy == 0) continue;
-
-            var nx = cx + dx;
-            var ny = cy + dy;
-            if (!CellWalkable(nx, ny)) continue;
-            if (PropBlocks(nx, ny)) continue;
-            if (CanTouch(new Vector2(nx, ny), p.Cell)) return true;
-        }
-
-        return false;
-    }
+    // 这里原来还有一份 CanReach（只看局部的可达性判断）。票号 S1-DIALOG-b：
+    // 可达性只留 Core 的 ReachAudit 一份实现，那份已经删掉，别再长回来。
 
     /// <summary>本场景所有能说话的人（Ctrl 高亮用）。</summary>
     public IEnumerable<NpcTalk> TalksHere()

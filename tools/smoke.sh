@@ -90,8 +90,11 @@ if [ "$FAST" = "0" ]; then
   audit() {
     local out
     out="$("$GODOT" --headless --path Juhuo -- --audit 2>&1)"
-    echo "$out" | tail -1
-    echo "$out" | grep -q "够不着 0 件"
+    echo "$out" | grep -E "合计|够不着\]" | tail -3
+    # 必须匹配"合计 … 够不着 0 件"这一行；只看单 hub 明细会假绿（曾经踩过）
+    echo "$out" | grep -qE "合计 [0-9]+ 件，够不着 0 件" || return 1
+    # 任何一条"够不着"清单都不许出现
+    ! echo "$out" | grep -q "\[够不着\]"
   }
   step "关卡可达性（120 件全部够得着）" audit || true
 
