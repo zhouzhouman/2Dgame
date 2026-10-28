@@ -120,7 +120,7 @@ public class ApplicationSaveTests
 
         Assert.NotNull(state);
         Assert.Null(error);
-        Assert.Equal(2, state!.Version);
+        Assert.Equal(SaveState.CurrentVersion, state!.Version);
         Assert.Equal(1, state.Day);
         Assert.Equal("hub1", state.Hub);
         Assert.Empty(state.Flags);

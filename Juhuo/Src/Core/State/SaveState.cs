@@ -12,8 +12,8 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class SaveState
 {
-    /// <summary>当前存档版本（schema_v2.md §C / §D）。</summary>
-    public const int CurrentVersion = 2;
+    /// <summary>当前存档版本（schema v3：序章多了 prologue 节）。</summary>
+    public const int CurrentVersion = 3;
 
     /// <summary>还能读的最低版本（更早的按"需迁移"处理）。</summary>
     public const int MinVersion = 1;
@@ -41,6 +41,9 @@ public sealed class SaveState
 
     /// <summary>背包。</summary>
     public List<InventoryEntry> Inventory { get; set; } = new();
+
+    /// <summary>序章节拍进度。第几天在顶层 <see cref="Day"/>，这里不重复存。</summary>
+    public PrologueState Prologue { get; set; } = new();
 
     /// <summary>各地区的信任：min / guan / yi。</summary>
     public Dictionary<string, TrustState> Trust { get; set; } = new();
@@ -108,18 +111,24 @@ public sealed class SaveState
     };
 
     /// <summary>
-    /// 补齐空缺：null 的子对象换成空壳。
+    /// 补齐空缺：null 的子对象换成空壳；顺带把旧版本档升到当前版本。
     /// </summary>
     private void Normalize()
     {
         Player ??= new PlayerState();
         Flags ??= new Dictionary<string, bool>();
         Inventory ??= new List<InventoryEntry>();
+        Prologue ??= new PrologueState();
         Trust ??= new Dictionary<string, TrustState>();
         Known ??= new KnownState();
         Hubs ??= new Dictionary<string, HubState>();
 
         Known.Normalize();
+        Prologue.Normalize();
+
+        // v2 及更早没有 prologue 节：读进来就是"节拍一件没做"，这是可接受的降级（S1-06）。
+        // 只升不降：比当前版本新的档保持原样，交给 IsTooNew 拒收。
+        if (Version < CurrentVersion) Version = CurrentVersion;
 
         foreach (var item in Inventory)
         {
@@ -136,6 +145,27 @@ public sealed class SaveState
 
         foreach (var hub in Hubs.Values)
             hub?.Normalize();
+    }
+}
+
+/// <summary>
+/// 序章进度（schema v3 新增）。第几天复用顶层 <see cref="SaveState.Day"/>，这里只记节拍。
+/// </summary>
+public sealed class PrologueState
+{
+    /// <summary>已完成的节拍 id，按剧情顺序；v2 旧档读进来是空数组。</summary>
+    [JsonPropertyName("beats_done")]
+    public List<string> BeatsDone { get; set; } = new();
+
+    /// <summary>未知字段：保留并写回。</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; } = new();
+
+    /// <summary>补齐空缺，并丢掉空 id。</summary>
+    internal void Normalize()
+    {
+        BeatsDone ??= new List<string>();
+        BeatsDone.RemoveAll(string.IsNullOrEmpty);
     }
 }
 

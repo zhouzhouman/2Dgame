@@ -52,7 +52,9 @@ public class SaveStateTests
 
         var b = SaveState.FromJson(a.ToJson());
 
-        Assert.Equal(2, b.Version);
+        // 写进去的是 v2 档，读出来已经被迁移到当前版本（v3）；其余字段一个不变。
+        Assert.Equal(SaveState.CurrentVersion, b.Version);
+        Assert.Empty(b.Prologue.BeatsDone);
         Assert.Equal(20260815, b.Seed);
         Assert.Equal(7, b.Day);
         Assert.Equal("prologue", b.Tense);
@@ -93,7 +95,7 @@ public class SaveStateTests
     {
         var json = new SaveState().ToJson();
 
-        Assert.Contains("\"version\": 2", json);
+        Assert.Contains("\"version\": 3", json);
         Assert.Contains("\n  \"day\": 1", json);
     }
 
@@ -102,7 +104,7 @@ public class SaveStateTests
     {
         var s = SaveState.FromJson("{}");
 
-        Assert.Equal(2, s.Version);
+        Assert.Equal(3, s.Version);
         Assert.Equal(0, s.Seed);
         Assert.Equal(1, s.Day);
         Assert.Equal("prologue", s.Tense);
@@ -135,7 +137,7 @@ public class SaveStateTests
         var keys = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n, System.StringComparer.Ordinal).ToArray();
 
         Assert.Equal(
-            new[] { "day", "flags", "hub", "hubs", "inventory", "known", "player", "seed", "tense", "trust", "version" },
+            new[] { "day", "flags", "hub", "hubs", "inventory", "known", "player", "prologue", "seed", "tense", "trust", "version" },
             keys);
     }
 
