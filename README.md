@@ -76,16 +76,17 @@ GODOT="$(python tools/godot_path.py)"
 
 ```bash
 python tools/gen_prologue_data.py    # 生成 120 条可搜点 + 7 张地图（生成即校验）
-python tools/validate.py             # 校验内容：越界/不可通行/重叠/空文本/引用缺失
-python tools/validate.py --selftest  # 证明五类错都能被报出
+python tools/validate.py             # 校验内容：越界/不可通行/重叠/空文本/引用缺失 + 两份 CSV 同源 + 节拍表
+python tools/validate.py --selftest  # 证明各类错都能被报出
 python tools/sim_balance.py          # 30 年经济模拟与战斗推演
 ```
 
-`tools/gen_prologue_data.py` 负责生成 `举火_序章数据_全关卡_v1.1.csv`（文档与校对用）。
+`tools/gen_prologue_data.py` 一次写两份同源 CSV：`举火_序章数据_全关卡_v1.1.csv`（文档与校对用）
+和 `Juhuo/Content/data/points.csv`（游戏运行时读的那份）。
 
-> **注意（2026-10-28 实测）**：生成器**目前不写**游戏读的 `Juhuo/Content/data/points.csv`——那份仍是手工维护，
-> 两份数据没有同步脚本。改动点位时**两边都要改**，否则会出现"文档对、游戏错"。
-> 这是一条已知缺陷（`QA/bugs/Q-014.md`），修法是让生成器直写游戏 CSV 并加一致性校验。
+> **改点位只改生成器，然后重新生成**。不要手改 `Juhuo/Content/data/*.csv` —— 那是生成物，
+> 下次生成就被覆盖；`python tools/validate.py` 会逐条比对两份 CSV 的 id / hub / x / y / name，
+> 一旦有人手改了一边就报 E09（Q-014 已修）。
 
 ---
 

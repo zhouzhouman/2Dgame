@@ -259,21 +259,29 @@ def main():
     for r in rd[1:]:
         rows.append(('hub3',) + tuple(r))
 
-    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       '举火_序章数据_全关卡_v1.1.csv')
-    with open(out, 'w', encoding='utf-8-sig', newline='') as f:
-        # lineterminator='\n'：Git 里存的是 LF（见 .gitattributes 的 *.csv text eol=lf）。
-        # 用默认的 \r\n 会让每次重新生成都产生"整份文件都改了"的假 diff。
-        wr = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator='\n')
-        wr.writerow(['hub', 'id', 'mark', 'x', 'y', 'layer', 'name', 'requires',
-                     'text_once', 'text_repeat', 'loot', 'set_flag', 'watch_npc', 'cost'])
-        wr.writerows(rows)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 同一份数据写两处：
+    #   1) 仓库根目录的文档 CSV（校对、给设计看）
+    #   2) 游戏运行时真正读的 Juhuo/Content/data/points.csv
+    # 以前只写第 1 处，游戏那份手工维护，两份会悄悄分叉（Q-014）。
+    out = os.path.join(root, '举火_序章数据_全关卡_v1.1.csv')
+    game_out = os.path.join(root, 'Juhuo', 'Content', 'data', 'points.csv')
+    header = ['hub', 'id', 'mark', 'x', 'y', 'layer', 'name', 'requires',
+              'text_once', 'text_repeat', 'loot', 'set_flag', 'watch_npc', 'cost']
+    for path in (out, game_out):
+        with open(path, 'w', encoding='utf-8-sig', newline='') as f:
+            # lineterminator='\n'：Git 里存的是 LF（见 .gitattributes 的 *.csv text eol=lf）。
+            # 用默认的 \r\n 会让每次重新生成都产生"整份文件都改了"的假 diff。
+            wr = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator='\n')
+            wr.writerow(header)
+            wr.writerows(rows)
 
     from collections import Counter
     print('OK 总条数:', len(rows))
     print('分 hub:', dict(Counter(r[0] for r in rows)))
     print('分 layer:', dict(Counter(r[5] for r in rows)))
     print('写盘:', out)
+    print('写盘:', game_out)
 
 if __name__ == '__main__':
     main()
