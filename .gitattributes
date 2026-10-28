@@ -1,0 +1,31 @@
+# 仓库根的文本规则
+#
+# 之前只有 Juhuo/.gitattributes，仓库根的文档、CSV、脚本都不受约束：
+# 换行符在 Windows 与 Linux 之间漂移，克隆后会整片显示"已修改"。
+# 这里补齐根规则（Juhuo/ 子树仍以 Juhuo/.gitattributes 为准）。
+* text=auto eol=lf
+
+*.md      text eol=lf
+*.csv     text eol=lf
+*.py      text eol=lf
+*.sh      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+*.tscn    text eol=lf
+*.godot   text eol=lf
+*.cs      text eol=lf
+*.csproj  text eol=crlf
+*.sln     text eol=crlf
+
+# 二进制：只标记为非文本，不做换行转换
+# （本仓库暂不使用 Git LFS，理由与恢复步骤见 Juhuo/.gitattributes）
+*.png     -text
+*.jpg     -text
+*.ttf     -text
+*.otf     -text
+*.wav     -text
+*.ogg     -text
+*.psd     -text
+*.aseprite -text

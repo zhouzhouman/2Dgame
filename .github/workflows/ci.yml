@@ -48,12 +48,8 @@ jobs:
 
       - name: Src/Core 不得引用 Godot
         run: |
-          if grep -rn "using Godot" Juhuo/Src/Core --include="*.cs"; then
-            echo "::error::Src/Core 里出现了 using Godot"
-            exit 1
-          fi
-          if grep -rn "GodotSharp" Juhuo/Src/Core --include="*.cs" --include="*.csproj"; then
-            echo "::error::Src/Core 里出现了 GodotSharp 引用"
+          if grep -rnE "using +Godot|Godot\.[A-Z]|GodotSharp" Juhuo/Src/Core --include="*.cs" --include="*.csproj"; then
+            echo "::error::Src/Core 里出现了 Godot 引用（using Godot / Godot.XXX / GodotSharp）"
             exit 1
           fi
           echo "Core 纯净"
