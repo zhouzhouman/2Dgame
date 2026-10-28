@@ -10,6 +10,13 @@
 *.godot   text eol=lf
 
 # 二进制走 LFS
+#
+# 注意（2026-10-28）：本机没有安装 git-lfs，而系统级 gitconfig 里却声明了 LFS 过滤器，
+# 结果是任何被下面规则标记的文件在 git add 时会直接失败。
+# 处理办法：在仓库内把 lfs 过滤器置为 no-op（见 .git/config 的 filter.lfs.*），
+# 二进制以真实内容入库——现在只有 24.7MB 的字体，低于 GitHub 单文件 100MB 限制。
+# 等正式像素图与音频进场、仓库体积上到百兆级时，装上 Git LFS 并执行 git lfs install，
+# 下面这些规则就会自动生效，不用改文件。
 *.png      filter=lfs diff=lfs merge=lfs -text
 *.jpg      filter=lfs diff=lfs merge=lfs -text
 *.aseprite filter=lfs diff=lfs merge=lfs -text

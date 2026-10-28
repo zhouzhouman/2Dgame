@@ -70,6 +70,20 @@
 - **影响**：出包 job 留在技术选型 §Step 9 的注释里，等预设补齐再解除。
 - **推翻条件**：`export_presets.cfg` 建立且本机导出模板就位。
 
+## D-010 ｜ 2026-10-28 ｜ 字体以普通文件入库，Git LFS 推迟
+
+- **决定**：仓库内把 `filter.lfs.*` 置为 no-op，字体以真实内容（24,744,500 字节）入库；同时移除会自动生成的 LFS 钩子（`pre-push` / `post-commit` 等），因为它们在没有 git-lfs 时会直接拦截 `git push`。
+- **理由**：本机**没有安装 git-lfs**，但系统级 gitconfig 声明了 LFS 过滤器，结果是凡被 `.gitattributes` 标记的路径在 `git add` 时直接失败；仓库里那个字体当时只是一个 133 字节的指针，推上去别人 clone 会拿到文本文件而不是字体。
+- **影响**：`Juhuo/.gitattributes` 的 LFS 规则保留但当前不生效（无 filter 即为普通文件）；24.7MB 低于 GitHub 单文件 100MB 限制，clone 下来开箱即用。
+- **推翻条件**：正式像素图与音频进场、仓库体积上到百兆级时，装 Git LFS 并执行 `git lfs install`，规则自动恢复。
+
+## D-011 ｜ 2026-10-28 ｜ 接远端 `zhouzhouman/2Dgame`，main 为唯一主干
+
+- **决定**：远端 `git@github.com:zhouzhouman/2Dgame.git`，分支 `main`；本地历史 rebase 到远端初始提交之上，形成线性历史（4 个提交）。
+- **理由**：远端原本只有一个 GitHub 自动生成的空 README（`# 2Dgame`），与本地无冲突；线性历史便于多智能体并行开发时用 `git log` 追责。
+- **影响**：本地 `main` 已设置跟踪 `origin/main`；后续每个 agent 的产出按票提交，提交信息带票号。
+- **推翻条件**：若要开 `develop` 分支或 PR 流程，另立决定。
+
 ---
 
 ## 待议（不排期）
