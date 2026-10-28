@@ -54,8 +54,8 @@
 ```bash
 GODOT="$(python tools/godot_path.py)"
 
-dotnet build Juhuo/Juhuo.sln
-dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj
+bash tools/dotnet.sh build Juhuo/Juhuo.sln
+bash tools/dotnet.sh test Juhuo/Tests/Core.Tests/Core.Tests.csproj
 python tools/gen_prologue_data.py
 python tools/validate.py
 "$GODOT" --headless --path Juhuo --quit -- --audit
@@ -65,7 +65,8 @@ python tools/validate.py
 python tools/sim_balance.py
 ```
 
-三条坑：`--quit` 必须在 `--` 之前；`dotnet test` 路径带 `Juhuo/` 前缀；`--audit` 自身不退出（Q-001）。
+四个坑：`--quit` 必须在 `--` 之前；`dotnet test` 路径带 `Juhuo/` 前缀；受限环境里直接跑 `dotnet` 会因 NuGet 读不到
+`ProgramFiles` / `LOCALAPPDATA` 而报 `path1` 为空，用 `bash tools/dotnet.sh` 兜底；`--audit` 自身不退出（Q-001）。
 
 新功能如果没有对应的无头验证参数，**直接判 PARTIAL**，并开票要求补。
 

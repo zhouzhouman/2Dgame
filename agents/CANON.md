@@ -63,6 +63,14 @@
 | 引擎 | Godot 4.7.2 (.NET) / C# 12 / net8.0 / `global.json` 锁 8.0.x |
 | 包体 / 字体 | ≤150MB / 子集化后 ≤2MB |
 
+**环境约定（受限容器 / 沙箱里必读）**
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| `dotnet build` 报 `Value cannot be null. (Parameter 'path1')` | `ProgramFiles` / `ProgramFiles(x86)` / `LOCALAPPDATA` / `NUGET_PACKAGES` 为空，NuGet 静态初始化崩溃 | `bash tools/dotnet.sh build ...` |
+| `godot: command not found` | 长驻进程持有旧环境（注册表 PATH 其实是对的） | `GODOT="$(python tools/godot_path.py)"` |
+| `git add` 报 `clean filter 'lfs' failed` | 本机没装 git-lfs，但系统 gitconfig 声明了 LFS 过滤器 | 仓库已把过滤器置 no-op；新仓库需同样处理 |
+
 ---
 
 ## 5 文档效力顺序

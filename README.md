@@ -47,6 +47,10 @@
 dotnet build Juhuo/Juhuo.sln
 dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj
 
+# 容器 / 沙箱里 NuGet 读不到 ProgramFiles、LOCALAPPDATA 时，用兜底脚本
+bash tools/dotnet.sh build Juhuo/Juhuo.sln
+bash tools/dotnet.sh test Juhuo/Tests/Core.Tests/Core.Tests.csproj
+
 # Godot 的绝对路径交给脚本解析，不依赖 PATH
 GODOT="$(python tools/godot_path.py)"
 
