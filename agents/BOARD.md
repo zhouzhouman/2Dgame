@@ -104,7 +104,7 @@
 | S0-06 | CI 门禁（三项：单测 / 内容校验 / Core 纯净性） | 2026-10-28 | `.github/workflows/ci.yml`（缺 headless 冒烟） |
 | S0-07 | G0 基线体检报告（Q1 中断，P0 代跑） | 2026-10-28 | `QA/reports/2026-10-27-baseline.md` |
 | S0-07R | Q1 独立复核（16 条事实全属实，0 条虚构）+ 6 张新缺陷票 | 2026-10-28 | `QA/reports/2026-10-28-review.md` |
-| S0-04 | Core 骨架（Calendar/Clock/FlagStore/SaveState），单测 16 → 73 | 2026-10-28 | `Juhuo/Src/Core/Time`、`State` |
+| S0-04 | Core 骨架（Calendar/Clock/FlagStore/SaveState），单测 16 → 82 | 2026-10-28 | `Juhuo/Src/Core/Time`、`State` |
 
 ---
 

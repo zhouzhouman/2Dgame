@@ -127,18 +127,43 @@ public class SaveStateTests
     [Fact]
     public void 字段严格照存档契约()
     {
-        // 只看真正会写进 JSON 的字段（可读可写、非计算属性；Extra 是扩展数据载体，不算契约字段）。
-        var names = typeof(SaveState)
-            .GetProperties()
-            .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
-            .Where(p => p.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonExtensionDataAttribute), true).Length == 0)
-            .Select(p => p.Name)
-            .OrderBy(n => n, System.StringComparer.Ordinal)
-            .ToArray();
+        // 直接断言序列化出来的 JSON 键，而不是反射属性名：
+        // 反射看不见"只读计算属性其实也会被写进 JSON"这类问题。
+        var json = new SaveState().ToJson();
+        using var doc = JsonDocument.Parse(json);
+
+        var keys = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n, System.StringComparer.Ordinal).ToArray();
 
         Assert.Equal(
-            new[] { "Day", "Flags", "Hub", "Hubs", "Inventory", "Known", "Player", "Seed", "Tense", "Trust", "Version" },
-            names);
+            new[] { "day", "flags", "hub", "hubs", "inventory", "known", "player", "seed", "tense", "trust", "version" },
+            keys);
+    }
+
+    [Fact]
+    public void 版本判断不进存档()
+    {
+        var json = new SaveState().ToJson();
+
+        // 这三个是只读计算属性，只给代码看，不许写进存档。
+        Assert.DoesNotContain("isSupported", json);
+        Assert.DoesNotContain("needsMigration", json);
+        Assert.DoesNotContain("isTooNew", json);
+    }
+
+    [Fact]
+    public void 嵌套对象的字段也照契约()
+    {
+        var s = new SaveState();
+        s.Hubs["hub3"] = new HubState { Entered = true, KeHalf = 14, CaughtCount = 1 };
+
+        using var doc = JsonDocument.Parse(s.ToJson());
+
+        var hub = doc.RootElement.GetProperty("hubs").GetProperty("hub3");
+        var hubKeys = hub.EnumerateObject().Select(p => p.Name).OrderBy(n => n, System.StringComparer.Ordinal).ToArray();
+
+        Assert.Equal(
+            new[] { "caught_count", "entered", "flags", "ke_half", "nudges", "patients", "patrol", "searched" },
+            hubKeys);
     }
 
     [Fact]

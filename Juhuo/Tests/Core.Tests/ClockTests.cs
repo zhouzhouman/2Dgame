@@ -171,7 +171,7 @@ public class ClockTests
     }
 
     [Fact]
-    public void 越线之后每欠四半刻催一次()
+    public void 越线之后每欠八半刻催一次()
     {
         var c = new Clock("hub3");
 
@@ -180,18 +180,35 @@ public class ClockTests
         Assert.Equal(32, c.KeHalf);
         Assert.Equal(1, c.Nudges);
 
-        // 再欠 4 半刻，催 2 次。
+        // 再欠 4 半刻还不到一个步长，不催。
+        c.AddHalfKe(4);
+        Assert.Equal(1, c.Nudges);
+
+        // 再欠满 8 半刻（4 刻），催 2 次。
         c.AddHalfKe(4);
         Assert.Equal(2, c.Nudges);
     }
 
     [Fact]
-    public void 催促最多五次()
+    public void 催到封顶就是三次()
     {
         var c = new Clock("hub3");
 
-        for (var i = 0; i < 40; i++) c.AddHalfKe(4);
+        for (var i = 0; i < 60; i++) c.AddHalfKe(4);
 
+        // rule_time_clock.md §验收 7：封顶 2B+16 时 nudges=3，不再增长。
+        Assert.Equal(32 + 16, c.KeHalf);
+        Assert.Equal(3, c.Nudges);
+    }
+
+    [Fact]
+    public void 催促次数上限是五()
+    {
+        // 上限跟 schema §C 的 nudges 0–5 对齐（D-015）。
+        Assert.Equal(5, Clock.MaxNudges);
+
+        // 存档里存了越界的催促次数，读进来夹到 5。
+        var c = Clock.FromState("hub3", new ClockState { KeHalf = 0, Nudges = 99 });
         Assert.Equal(5, c.Nudges);
     }
 

@@ -56,12 +56,15 @@ public sealed class SaveState
     public Dictionary<string, JsonElement>? Extra { get; set; } = new();
 
     /// <summary>这份存档的版本本构建认不认。</summary>
+    [JsonIgnore]
     public bool IsSupported => IsSupportedVersion(Version);
 
     /// <summary>这份存档比当前版本旧，需要逐级 upcast。</summary>
+    [JsonIgnore]
     public bool NeedsMigration => Version < CurrentVersion;
 
     /// <summary>这份存档来自更新的版本，拒收。</summary>
+    [JsonIgnore]
     public bool IsTooNew => Version > CurrentVersion;
 
     /// <summary>

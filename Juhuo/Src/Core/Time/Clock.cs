@@ -26,14 +26,15 @@ public sealed class Clock
     public const int OverflowCapHalf = 16;
 
     /// <summary>
-    /// 每多欠这么多半刻就记一次催促。
-    /// 取 4（= 2 刻）：票 S0-04 指定，配合 OVERFLOW_CAP=16 得催促上限 5，与
-    /// schema_v2.md §C 的 <c>hubs.*.nudges</c> 取值域 0–5 一致。
-    /// 规则卡 §4 默认 NUDGE_STEP=8（= 4 刻，上限 3）；两者不同，见 S0-04 报告的偏差条目。
+    /// 每多欠这么多半刻就记一次催促（rule_time_clock.md §4 NUDGE_STEP = 8 半刻 = 4 刻）。
+    /// 取 8 而非更小的值，是为了让催促不压过"每 4 刻死一个病人"这条主线节拍（D-015）。
     /// </summary>
-    public const int NudgeStepHalf = 4;
+    public const int NudgeStepHalf = 8;
 
-    /// <summary>催促次数上限（1 + OVERFLOW_CAP / NUDGE_STEP = 1 + 16/4 = 5）。</summary>
+    /// <summary>
+    /// 催促次数上限。规则卡 §边界给的是 1 + OVERFLOW_CAP/NUDGE_STEP = 3，
+    /// 这里取 5，与 schema_v2.md §C 的 <c>hubs.*.nudges</c> 取值域 0–5 对齐（D-015）。
+    /// </summary>
     public const int MaxNudges = 5;
 
     /// <summary>搜查一次的刻数基准（points.cost 的取值上限也是 3）。</summary>

@@ -27,8 +27,8 @@ public sealed class SearchPoint
     public string SetFlag { get; init; } = "";
     public string WatchNpc { get; init; } = "";
 
-    /// <summary>搜查消耗的刻数。</summary>
-    public double Cost { get; init; } = 1;
+    /// <summary>搜查消耗的刻数（整数，0–3）。刻是半刻整数记账的，字段不许用浮点（D-018）。</summary>
+    public int Cost { get; init; } = 1;
 
     public bool IsKnowledge => Layer == "knowledge";
 

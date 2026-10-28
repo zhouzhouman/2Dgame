@@ -41,8 +41,22 @@ public sealed class PointTable
         int GetInt(string[] row, string name) =>
             int.TryParse(Get(row, name), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
 
-        double GetDouble(string[] row, string name) =>
-            double.TryParse(Get(row, name), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 1;
+        // cost：缺失/空串按 1；非整数先向下取整再 clamp 0–3；实在解析不出来也按 1
+        // （rule_time_clock.md §边界；回落不是 0，否则搜查会白送刻数）。
+        int GetCost(string[] row, string name)
+        {
+            var raw = Get(row, name);
+            if (string.IsNullOrWhiteSpace(raw)) return 1;
+
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+                return Math.Clamp(v, 0, 3);
+
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+                && !double.IsNaN(d) && !double.IsInfinity(d))
+                return Math.Clamp((int)Math.Floor(d), 0, 3);
+
+            return 1;
+        }
 
         var list = new List<SearchPoint>(rows.Count - 1);
         for (var i = 1; i < rows.Count; i++)
@@ -65,7 +79,7 @@ public sealed class PointTable
                 Loot = Get(r, "loot"),
                 SetFlag = Get(r, "set_flag"),
                 WatchNpc = Get(r, "watch_npc"),
-                Cost = GetDouble(r, "cost"),
+                Cost = GetCost(r, "cost"),
             });
         }
 

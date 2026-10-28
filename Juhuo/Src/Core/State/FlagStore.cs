@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Juhuo.Core;
@@ -11,7 +12,10 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class FlagStore
 {
-    /// <summary>旗标名长度上限（字节）。</summary>
+    /// <summary>
+    /// 旗标名长度上限（UTF-8 字节数）。规则卡 §边界：name ≤40 字节，超长拒绝写入。
+    /// 点号式新名含汉字时 1 字 = 3 字节，所以这里必须按字节算，不能按字符数。
+    /// </summary>
     public const int MaxNameBytes = 40;
 
     /// <summary>单档全局旗标数上限。</summary>
@@ -20,11 +24,13 @@ public sealed class FlagStore
     /// <summary>单个空间的局部旗标数上限。</summary>
     public const int MaxLocalFlagsPerHub = 128;
 
-    // 新式三/四段命名：hub3_well_shoe_taken（rule_flags_save.md §1.1，只用下划线）。
+    // 旧式下划线命名：has_shoe / knows_herb_path / hub3_well_shoe_taken
+    // （rule_flags_save.md §1.1 的正则，全小写 ASCII）。
     private static readonly Regex NewStylePattern = new(@"^[a-z][a-z0-9]*(_[a-z0-9]+){1,3}$", RegexOptions.Compiled);
 
-    // 票面写法：域.对象.状态。规则卡 §1.1 说不用点号，这里两种都认，写入时以宽松为准。
-    private static readonly Regex DotStylePattern = new(@"^[a-z][a-z0-9]*(\.[a-z0-9]+){2,3}$", RegexOptions.Compiled);
+    // 新式点号命名：序章.账册.已读 / hub3.well.shoe_taken。
+    // 域.对象.状态三段（或四段），每段可含汉字、数字、下划线（D-017）。
+    private static readonly Regex DotStylePattern = new(@"^[\p{L}\p{N}_]+(\.[\p{L}\p{N}_]+){2,3}$", RegexOptions.Compiled);
 
     // 已知空间：序章 hub1–hub7，正篇 reg_*（schema_v2.md §A.1 / §B.3）。
     private static readonly Regex KnownHubPattern = new(@"^(hub[1-7]|reg_[a-z0-9_]+)$", RegexOptions.Compiled);
@@ -48,7 +54,8 @@ public sealed class FlagStore
 
     /// <summary>
     /// 读一个旗标。全局有键就用全局的（哪怕全局写的是 false），全局没有才看空间的局部。
-    /// 缺失、null、空串、未知 hub 一律 false。
+    /// hub 未知或为空时，只查全局就返回：全局旗标本就不属于任何空间，
+    /// 不该因为 hub 拼错就消失（规则卡 §公式"全局有键 &gt; 局部 &gt; false"，D-016）。
     /// </summary>
     /// <param name="name">旗标名。</param>
     /// <param name="hub">当前空间 id。</param>
@@ -56,9 +63,9 @@ public sealed class FlagStore
     public bool Has(string? name, string? hub)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        if (!IsKnownHub(hub)) return false;
 
         if (_global.TryGetValue(name!, out var g)) return g;
+        if (!IsKnownHub(hub)) return false;
 
         return _local.TryGetValue(hub!, out var scope) && scope.TryGetValue(name!, out var v) && v;
     }
@@ -225,10 +232,10 @@ public sealed class FlagStore
     public static bool IsValidName(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        if (name!.Length > MaxNameBytes) return false;
-        if (FrozenNames.Contains(name)) return true;
+        if (ByteLength(name!) > MaxNameBytes) return false;
+        if (FrozenNames.Contains(name!)) return true;
 
-        return NewStylePattern.IsMatch(name) || DotStylePattern.IsMatch(name);
+        return NewStylePattern.IsMatch(name!) || DotStylePattern.IsMatch(name!);
     }
 
     /// <summary>
@@ -243,13 +250,18 @@ public sealed class FlagStore
     }
 
     /// <summary>
-    /// 能不能写这个名字：不为空、不超长。旧式名照写不误。
+    /// 能不能写这个名字：不为空、不超长（按 UTF-8 字节算）。旧式名照写不误。
     /// </summary>
     private static bool CanWrite(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        if (name!.Length > MaxNameBytes) return false;
+        if (ByteLength(name!) > MaxNameBytes) return false;
 
         return true;
     }
+
+    /// <summary>
+    /// 旗标名的 UTF-8 字节长度（规则卡 §边界的 40 字节按这个算）。
+    /// </summary>
+    private static int ByteLength(string name) => Encoding.UTF8.GetByteCount(name);
 }

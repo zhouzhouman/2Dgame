@@ -20,16 +20,36 @@ public class FlagStoreTests
     }
 
     [Fact]
-    public void 空名与空空间一律是假的()
+    public void 空名一律是假的()
     {
         var f = new FlagStore();
         f.Set("has_shoe");
 
         Assert.False(f.Has("", "hub3"));
         Assert.False(f.Has(null, "hub3"));
-        Assert.False(f.Has("has_shoe", ""));
-        Assert.False(f.Has("has_shoe", null));
-        Assert.False(f.Has("has_shoe", "hub99"));
+    }
+
+    [Fact]
+    public void hub未知时全局旗标仍可读()
+    {
+        var f = new FlagStore();
+        f.Set("has_shoe");
+
+        // 全局旗标本就不属于任何空间，不该因为 hub 拼错就消失（D-016）。
+        Assert.True(f.Has("has_shoe", "hub99"));
+        Assert.True(f.Has("has_shoe", ""));
+        Assert.True(f.Has("has_shoe", null));
+    }
+
+    [Fact]
+    public void hub未知时局部旗标读不到()
+    {
+        var f = new FlagStore();
+        f.SetLocal("path_backhill_open", "hub3");
+
+        Assert.False(f.Has("path_backhill_open", "hub99"));
+        Assert.False(f.Has("path_backhill_open", ""));
+        Assert.False(f.Has("path_backhill_open", null));
     }
 
     [Fact]
@@ -99,6 +119,19 @@ public class FlagStoreTests
     }
 
     [Fact]
+    public void 点号式旗标名合法()
+    {
+        // 新式：域.对象.状态，域可以用汉字（D-017）。
+        Assert.True(FlagStore.IsValidName("序章.账册.已读"));
+        Assert.True(FlagStore.IsValidName("序章.账册.已读.备份"));
+        Assert.True(FlagStore.IsValidName("hub3.well.shoe_taken"));
+
+        var f = new FlagStore();
+        Assert.True(f.Set("序章.账册.已读"));
+        Assert.True(f.Has("序章.账册.已读", "hub3"));
+    }
+
+    [Fact]
     public void 名字校验认新旧两种写法()
     {
         Assert.True(FlagStore.IsValidName("hub3_well_shoe_taken"));
@@ -119,6 +152,24 @@ public class FlagStoreTests
 
         Assert.False(f.Set(tooLong));
         Assert.Equal(0, f.GlobalCount);
+    }
+
+    [Fact]
+    public void 名字长度按字节算()
+    {
+        // 规则卡 §边界：name ≤40 字节。汉字 1 字 = 3 字节。
+        // 名字形状要合法，长度才是唯一的变量。
+        var ascii40 = new string('a', 20) + "_" + new string('b', 19);
+        var ascii41 = new string('a', 21) + "_" + new string('b', 19);
+
+        Assert.True(FlagStore.IsValidName(ascii40));
+        Assert.False(FlagStore.IsValidName(ascii41));
+
+        // 8 个汉字 + ".账册.已读" = 24 + 14 = 38 字节，合法。
+        Assert.True(FlagStore.IsValidName(new string('字', 8) + ".账册.已读"));
+
+        // 9 个汉字 + ".账册.已读" = 27 + 14 = 41 字节，超了。
+        Assert.False(FlagStore.IsValidName(new string('字', 9) + ".账册.已读"));
     }
 
     [Fact]
