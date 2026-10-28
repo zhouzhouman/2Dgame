@@ -62,16 +62,35 @@ public partial class Main : Node2D
 
     private const string ProgressPath = "user://progress.cfg";
 
+    /// <summary>存档服务。文件动作由 Godot 那份提供，规则由 Core 那一层管。</summary>
+    private SaveService _save = default!;
+
+    /// <summary>这份档来自更新的版本，不许读也不许盖（rule_flags_save.md §4）。</summary>
+    private bool _saveBlocked;
+
+    /// <summary>自检跑完自己退出（Q-001）。</summary>
+    private bool _quitAfterFrame;
+
     public override void _Ready()
     {
+        _save = new SaveService(GodotSaveFileSystem.Create());
+
         LoadProgress();
         BuildUi();
+
+        var args = OS.GetCmdlineUserArgs();
 
         try
         {
             _table = PointTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/points.csv"));
             var talks = NpcTalkTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/npcs.csv"));
             _world = new World(_table, talks);
+
+            // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
+            _world.StateChanged += SaveGame;
+
+            // 读档。坏档给一句人话，从新游戏开始——绝不崩、绝不白屏。
+            LoadSave();
 
             foreach (var a in OS.GetCmdlineUserArgs())
                 if (a.StartsWith("--hub=", StringComparison.Ordinal))
@@ -112,7 +131,14 @@ public partial class Main : Node2D
 
         // 开发辅助：--audit 逐关自检"有没有够不着的东西"，然后退出
         if (OS.GetCmdlineUserArgs().Contains("--audit") && _world is not null)
+        {
             AuditReach();
+
+            // Q-001：自检跑完自己退出，不让 CI 挂在这儿。
+            // 但截图（--shot）在后面，所以截图在场时不抢它的退出权——
+            // TouchDemo() 当年就踩过"提前 return 把后面的逻辑一起跳过"这个坑。
+            if (!OS.GetCmdlineUserArgs().Contains("--shot")) _quitAfterFrame = true;
+        }
 
         // 开发辅助：--spy 把玩家挪到衙役眼皮底下，用来看视野和红晕
         if (OS.GetCmdlineUserArgs().Contains("--spy") && _world is not null)
@@ -189,12 +215,28 @@ public partial class Main : Node2D
             GD.Print($"[出口] 第二次 E：{from} → {_world.Hub}（{World.TitleOf(_world.Hub)}）");
         }
 
+        // 开发辅助：--savetest 写一份档 → 重读 → 逐字段比对 → 退出
+        if (OS.GetCmdlineUserArgs().Contains("--savetest"))
+        {
+            RunSaveTest();
+            _quitAfterFrame = true;
+        }
+
         if (OS.GetCmdlineUserArgs().Contains("--shot"))
             _ = CaptureAndQuitAsync();
     }
 
     public override void _Process(double delta)
     {
+        // 自检类调试参数跑完自己走人（Q-001）。放在这里而不是在 _Ready 里直接退，
+        // 是为了不把这一帧后面的逻辑（截图之类）一起跳过。
+        if (_quitAfterFrame)
+        {
+            _quitAfterFrame = false;
+            GetTree().Quit();
+            return;
+        }
+
         if (_world is null) return;
 
         _time += (float)delta;
@@ -205,6 +247,20 @@ public partial class Main : Node2D
         else _ctrlHeld = 0f;
 
         TickNudge((float)delta);
+    }
+
+    /// <summary>
+    /// 窗口要关的时候：先把档写完再走。
+    /// 存盘时机之一（rule_flags_save.md §2 第 7 条）。
+    /// </summary>
+    public override void _Notification(int what)
+    {
+        base._Notification(what);
+
+        if (what != NotificationWMCloseRequest) return;
+
+        SaveGame();
+        GetTree().Quit();
     }
 
     public override void _UnhandledInput(InputEvent @event)
@@ -463,7 +519,7 @@ public partial class Main : Node2D
 
     private string IdleHint()
     {
-        var searched = _world.Props.Count(p => _world.Searched.Contains(p.Point.Id));
+        var searched = _world.Props.Count(p => _world.IsSearched(p.Point.Id));
         return $"WASD 走动　·　E 搜查　·　按住 Ctrl 看全部　·　本处已搜 {searched}/{_world.Props.Count}";
     }
 
@@ -521,8 +577,119 @@ public partial class Main : Node2D
         if (_world is null) return;
 
         _title.Text = World.TitleOf(_world.Hub);
-        var searched = _world.Props.Count(p => _world.Searched.Contains(p.Point.Id));
+        var searched = _world.Props.Count(p => _world.IsSearched(p.Point.Id));
         _subtitle.Text = $"刻 {_world.KeUsed}/{_world.KeBudget}　·　已搜 {searched}/{_world.Props.Count}";
+    }
+
+    // ————————————————————————— 存档 —————————————————————————
+
+    /// <summary>
+    /// 启动时读档。
+    ///
+    /// 坏档不崩、不白屏：坏档改名 .corrupt-*，再试备份，都不行就从新游戏开始，
+    /// 手记里给玩家一句人话（rule_flags_save.md §3.2）。
+    /// </summary>
+    private void LoadSave()
+    {
+        var result = _save.LoadOrRecover();
+
+        if (result.Blocked)
+        {
+            // 版本比当前新：拒绝载入，也不许拿新档盖掉它。
+            _saveBlocked = true;
+            GD.Print($"[存档] {result.Error}");
+            SetHint("这份记录来自更新的版本，这一段路得重新走。", 6f);
+            return;
+        }
+
+        if (result.State is not null)
+        {
+            _world.RestoreFrom(result.State);
+            GD.Print($"[存档] 读到（{result.Origin}）：{_world.Hub}（{World.TitleOf(_world.Hub)}），刻 {_world.KeUsed}/{_world.KeBudget}，旗标 {_world.Flags.GlobalCount} 条，见过 {_world.Talked.Count} 个人");
+            return;
+        }
+
+        if (result.Notice is not null)
+        {
+            GD.Print($"[存档] {result.Origin}：{result.Error}");
+            SetHint(result.Notice, 6f);
+        }
+    }
+
+    /// <summary>
+    /// 存档。写不进去只打一条日志，不打断游戏——
+    /// 存档是给玩家兜底的，不是拿来卡住他的。
+    /// </summary>
+    private void SaveGame()
+    {
+        if (_world is null) return;
+        if (_saveBlocked) return;      // 版本过新的那份不许被盖
+
+        var (ok, error) = _save.TrySave(_world.ToSaveState());
+        if (!ok) GD.PushWarning($"[存档] 没写成功：{error}");
+    }
+
+    /// <summary>
+    /// --savetest：写一份档 → 重读 → 逐字段比对 → 打印结果。
+    ///
+    /// 走的是正式的 SaveService 与正式的文件动作，只是路径换成自检专用的那一份，
+    /// 免得把玩家自己的档冲掉。
+    /// </summary>
+    private void RunSaveTest()
+    {
+        var service = new SaveService(
+            GodotSaveFileSystem.Create(),
+            "user://save.selftest.json",
+            "user://save.selftest.tmp",
+            "user://save.selftest.bak");
+
+        var state = _world is not null ? _world.ToSaveState() : new SaveState();
+
+        // 塞一点不是默认值的东西，比对才有东西可比
+        state.Seed = 20260815;
+        state.Day = 7;
+        state.Player.X = 4.5;
+        state.Player.Y = 20.25;
+        state.Flags["has_medicine"] = true;
+        state.Flags["took_temple_coin"] = false;
+        state.Known.Clues.Add("knows_herb_path");
+        state.Known.Npcs.Add(new NpcState { Hub = "hub3", Id = "A", Met = true, Again = 2, Quest = 1 });
+        state.Inventory.Add(new InventoryEntry { Item = "bread", N = 1 });
+        state.Inventory.Add(new InventoryEntry { Item = "shoe", N = 1 });
+        state.Trust["prologue"] = new TrustState { Min = 12, Guan = 0, Yi = 8 };
+
+        var village = new HubState { Entered = true, KeHalf = 14, Nudges = 1, CaughtCount = 1 };
+        village.Searched.Add("bf_01");
+        village.Searched.Add("bf_03");
+        village.Flags["path_backhill_open"] = false;
+        village.Patients["D"] = "alive";
+        village.Patients["E"] = "dying";
+        village.Patrol["G"] = new PatrolState { Wp = 2, T = 13.4 };
+        state.Hubs["hub3"] = village;
+
+        var (ok, error) = service.TrySave(state);
+        if (!ok)
+        {
+            GD.Print($"写档 → 重读 → 写不进去：{error}");
+            return;
+        }
+
+        var (back, loadError) = service.TryLoad();
+        if (back is null)
+        {
+            GD.Print($"写档 → 重读 → 读不回来：{loadError}");
+            return;
+        }
+
+        var diffs = SaveDiff.Compare(state, back);
+        if (diffs.Count == 0)
+        {
+            GD.Print("写档 → 重读 → 一致");
+            return;
+        }
+
+        GD.Print($"写档 → 重读 → 有 {diffs.Count} 处差异");
+        foreach (var d in diffs) GD.Print($"[存自检] 差：{d}");
     }
 
     // ————————————————————————— 进度 —————————————————————————

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using Juhuo.Application;
 using Juhuo.Art;
 using Juhuo.Core;
 
@@ -101,6 +102,39 @@ public sealed class World
     private readonly PointTable _table;
     private readonly NpcTalkTable _talks;
 
+    /// <summary>
+    /// 每个空间一本刻账。刻数只有 Core 说了算，这里只负责取——
+    /// Game 层不再自己算 KeUsed / KeLeft（rule_time_clock.md 是唯一数值源）。
+    /// </summary>
+    private readonly Dictionary<string, Clock> _clocks = new();
+
+    /// <summary>
+    /// 每个空间搜过的东西，按搜的先后排。存档里的 searched 是有序的，
+    /// 后搜的文本要引用先搜的，所以不能用 HashSet。
+    /// </summary>
+    private readonly Dictionary<string, List<string>> _searched = new();
+
+    /// <summary>每个空间被看见过几次（存档里的 hubs.*.caught_count）。</summary>
+    private readonly Dictionary<string, int> _caught = new();
+
+    /// <summary>
+    /// 旗标仓库。取值只有 <see cref="FlagStore.Has"/> 一条路
+    /// （rule_flags_save.md §公式），Game 层不自己判真假。
+    /// </summary>
+    private readonly FlagStore _flags = new();
+
+    /// <summary>
+    /// 状态变了，该存盘了。
+    ///
+    /// 刻账、旗标、搜过的东西、说过的话 —— 这些动过了就该落盘
+    /// （rule_flags_save.md §2 的存盘时机）。
+    /// 由表现层接上存档服务，这一层自己不碰文件。
+    /// </summary>
+    public event Action? StateChanged;
+
+    /// <summary>这个空间的刻账。</summary>
+    private Clock _clock = new();
+
     public string Hub { get; private set; } = "hub1";
     public TerrainMap Map { get; private set; } = default!;
     public List<Interactable> Props { get; } = new();
@@ -110,24 +144,49 @@ public sealed class World
     public List<SceneConfig.Npc> Npcs { get; } = new();
     public Player Player { get; } = new();
 
-    /// <summary>跨 hub 保留：搜过的东西不会因为你走开就变回没搜过。</summary>
-    public HashSet<string> Searched { get; } = new();
-
-    /// <summary>说过话的人，key 是 hub:x,y。</summary>
+    /// <summary>说过话的人，key 是 hub:x,y 或 hub:guard:名字。</summary>
     public HashSet<string> Talked { get; } = new();
 
-    public int KeBudget { get; private set; }
-    public int KeUsed { get; private set; }
-    public int KeLeft => Math.Max(0, KeBudget - KeUsed);
+    /// <summary>跟每个人说过几次（存档里的 known.npcs[].again）。</summary>
+    private readonly Dictionary<string, int> _talkCounts = new();
+
+    /// <summary>这一处搜过的东西，按搜的先后排。</summary>
+    public IReadOnlyList<string> Searched =>
+        _searched.TryGetValue(Hub, out var list) ? list : (IReadOnlyList<string>)Array.Empty<string>();
+
+    /// <summary>这件东西搜过了没有。</summary>
+    public bool IsSearched(string id) =>
+        _searched.TryGetValue(Hub, out var list) && list.Contains(id);
+
+    /// <summary>旗标仓库。给表现层与存档用。</summary>
+    public FlagStore Flags => _flags;
+
+    /// <summary>已用刻。整数刻，向下取整（Core 说了算，对玩家有利）。</summary>
+    public int KeUsed => _clock.KeUsedKe;
+
+    /// <summary>这一处的刻预算（Core 的 ClockTable 查出来的那份）。</summary>
+    public int KeBudget => _clock.KeBudgetHalf / 2;
+
+    /// <summary>还剩几刻。</summary>
+    public int KeLeft => _clock.KeLeftKe;
+
+    /// <summary>被催过几次。</summary>
+    public int Nudges => _clock.Nudges;
 
     public string? LastMessage { get; private set; }
     public float MessageTime { get; private set; }
 
+    /// <summary>
+    /// 上一次搜查为什么没成。空串 = 没被拦（要么压根没有可搜的东西）。
+    /// 表现层靠它决定说"这里没什么可翻的"还是"这里现在还看不出来"。
+    /// </summary>
+    public string LastSearchNote { get; private set; } = "";
+
     // —— 被发现 ——
     /// <summary>被发现后屏幕边缘的红晕强度，1.2 秒内衰减到 0。</summary>
     public float SpotFlash { get; private set; }
-    /// <summary>一共被看见过几次。每三次触发一次盘问。</summary>
-    public int TimesSpotted { get; private set; }
+    /// <summary>这一处被看见过几次。每三次触发一次盘问。</summary>
+    public int TimesSpotted => _caught.TryGetValue(Hub, out var n) ? n : 0;
     /// <summary>当前有没有人正看着你。</summary>
     public bool BeingWatched { get; private set; }
 
@@ -136,15 +195,24 @@ public sealed class World
     /// <summary>白幡村每搜四个点，村那头就少一个人。这是设计里最狠的一条。</summary>
     public int VillagerDeaths { get; private set; }
 
-    private static readonly Dictionary<string, (string Title, int Ke)> Hubs = new()
+    /// <summary>村里死了的人，按死的先后（存档里的 hubs.hub3.patients）。</summary>
+    private readonly List<string> _deadVillagers = new();
+
+    /// <summary>
+    /// 七个空间的标题。
+    ///
+    /// 刻预算不在这里 —— 预算只有 Core 的 ClockTable 一份，
+    /// 数值源是 rule_time_clock.md §2。这里再抄一遍就是第二套真相。
+    /// </summary>
+    private static readonly Dictionary<string, string> HubTitles = new()
     {
-        ["hub1"] = ("城南小院", 8),
-        ["hub2"] = ("逃亡路 · 废驿", 10),
-        ["hub3"] = ("白幡村", 16),
-        ["hub4"] = ("县城", 20),
-        ["hub5"] = ("山神庙", 12),
-        ["hub6"] = ("官仓 · 破庙", 14),
-        ["hub7"] = ("城下营地", 8),
+        ["hub1"] = "城南小院",
+        ["hub2"] = "逃亡路 · 废驿",
+        ["hub3"] = "白幡村",
+        ["hub4"] = "县城",
+        ["hub5"] = "山神庙",
+        ["hub6"] = "官仓 · 破庙",
+        ["hub7"] = "城下营地",
     };
 
     private static readonly string[] HubOrder =
@@ -157,13 +225,13 @@ public sealed class World
         Load("hub1");
     }
 
-    public static string TitleOf(string hub) => Hubs.TryGetValue(hub, out var v) ? v.Title : hub;
+    public static string TitleOf(string hub) => HubTitles.TryGetValue(hub, out var v) ? v : hub;
 
     public static int IndexOf(string hub) => Array.IndexOf(HubOrder, hub);
 
     public void Load(string hub)
     {
-        if (!Hubs.ContainsKey(hub)) hub = "hub1";
+        if (!HubTitles.ContainsKey(hub)) hub = "hub1";
 
         Hub = hub;
         var text = FileAccess.GetFileAsString($"res://Content/maps/{hub}.txt").Replace("\r", "");
@@ -172,8 +240,18 @@ public sealed class World
         Props.Clear();
         Guards.Clear();
         Npcs.Clear();
-        KeUsed = 0;
-        KeBudget = Hubs[hub].Ke;
+
+        // 刻账：进过的空间接着算，没进过的从 0 起（rule_time_clock.md §例外 7）。
+        // 预算是 Core 的 ClockTable 查的，不是这里写死的。
+        if (!_clocks.TryGetValue(hub, out var clock))
+        {
+            clock = new Clock(hub);
+            _clocks[hub] = clock;
+        }
+        _clock = clock;
+
+        if (!_searched.TryGetValue(hub, out _))
+            _searched[hub] = new List<string>();
 
         foreach (var p in _table.ForHub(hub))
         {
@@ -222,7 +300,7 @@ public sealed class World
 
     /// <summary>走到出口就进下一个 hub；最后一个 hub 就停在原地。</summary>
     /// <summary>这一处还剩几件没看过。出口提示要用它劝一句。</summary>
-    public int UnsearchedHere => Props.Count(p => !Searched.Contains(p.Point.Id));
+    public int UnsearchedHere => Props.Count(p => !IsSearched(p.Point.Id));
 
     /// <summary>下一关的 hub id；已经是最后一关就返回 null。</summary>
     public string? NextHub
@@ -238,7 +316,12 @@ public sealed class World
     {
         var i = IndexOf(Hub);
         if (i < 0 || i >= HubOrder.Length - 1) return false;
+
+        // 赶路 2 刻，记在离开的那个空间（rule_time_clock.md §3 / §验收 8）。
+        _clock.SpendTravel();
+
         Load(HubOrder[i + 1]);
+        StateChanged?.Invoke();
         return true;
     }
 
@@ -316,11 +399,16 @@ public sealed class World
         if (_seenTimer < 0.55f) return;
 
         _seenTimer = 0f;
-        TimesSpotted++;
+        var spotted = TimesSpotted + 1;
+        _caught[Hub] = spotted;
         SpotFlash = 1.2f;
-        KeUsed = Math.Min(KeBudget, KeUsed + 2);
 
-        Say(TimesSpotted % 3 == 0
+        // 被打断 2 刻；第三次被看见改成盘问 4 刻，是替代不是叠加
+        // （rule_time_clock.md §3）。记账交给 Core。
+        if (spotted % 3 == 0) _clock.SpendInterrogate();
+        else _clock.SpendInterrupt();
+
+        Say(spotted % 3 == 0
             ? "「站住。」他把手按在刀上。你多花了些工夫才脱身。"
             : "衙役看见你了。他没喊，只是把你的脸记下了。");
     }
@@ -526,25 +614,88 @@ public sealed class World
         if (who is null) return null;
 
         var first = Talked.Add(who.Key);
+        _talkCounts[who.Key] = _talkCounts.TryGetValue(who.Key, out var n) ? n + 1 : 1;
+
+        // 首次对话 0 刻，再谈 1 刻（CANON 硬约束 3 / rule_time_clock.md §3）。
+        _clock.SpendTalk(first);
+
         var body = first || who.Again.Length == 0 ? who.First : who.Again;
+        StateChanged?.Invoke();
         return ($"{who.Name}　　{(first ? "初见" : "再谈")}", body);
     }
 
-    /// <summary>搜一次。返回要显示的文本；已经搜过就返回重复文本。</summary>
+    /// <summary>
+    /// 搜一次。返回要显示的文本；已经搜过就返回重复文本。
+    /// </summary>
     public (string Text, bool First, Interactable Prop)? Search()
     {
         var p = Nearest();
-        if (p is null) return null;
+        if (p is null)
+        {
+            LastSearchNote = "";
+            return null;
+        }
 
-        var first = Searched.Add(p.Point.Id);
+        // 知识门：条件没满足就当没这回事。0 刻、不置 searched、不置旗标
+        // （rule_time_clock.md §例外 3 / rule_flags_save.md §例外 5）。
+        if (!CanReveal(p.Point))
+        {
+            LastSearchNote = "这里现在还看不出来。";
+            Say(LastSearchNote);
+            return null;
+        }
+
+        LastSearchNote = "";
+
+        // 结算顺序（rule_time_clock.md §边界）：先记刻，再落世界后果。
+        // 重搜一样收费——不然"翻不完"的取舍就不成立（§3）。
+        _clock.SpendSearch(p.Point.Cost);
+
+        var list = SearchedList();
+        var first = !list.Contains(p.Point.Id);
         if (first)
         {
-            KeUsed++;
+            list.Add(p.Point.Id);
+            ApplyFlag(p.Point.SetFlag);
             TickVillage();
         }
 
         var text = first ? p.Point.TextOnce : p.Point.TextRepeat;
+        StateChanged?.Invoke();
         return (text, first, p);
+    }
+
+    /// <summary>这一处搜过的东西的列表（按搜的先后）。</summary>
+    private List<string> SearchedList()
+    {
+        if (!_searched.TryGetValue(Hub, out var list))
+        {
+            list = new List<string>();
+            _searched[Hub] = list;
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 这件东西现在能不能看。知识门看旗标，明面与细看永远能看。
+    /// 旗标取值一律走 <see cref="FlagStore.Has"/>。
+    /// </summary>
+    private bool CanReveal(SearchPoint point)
+    {
+        if (!point.IsKnowledge) return true;
+        return FlagExpression.Evaluate(point.Requires, _flags, Hub);
+    }
+
+    /// <summary>
+    /// 搜查成功后置旗标。默认写全局（rule_flags_save.md §1.4「默认写全局」）。
+    /// 空串 = 不置任何旗标（合法，不是错误）。
+    /// </summary>
+    private void ApplyFlag(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        if (!_flags.Set(name))
+            GD.PushWarning($"[旗标] 「{name}」写不进去（名字超长或仓库满了），这一条作废。");
     }
 
     /// <summary>
@@ -567,16 +718,162 @@ public sealed class World
                 if (Npcs[i].Kind == "sick") { idx = i; break; }
 
             if (idx < 0) break;
+
+            // 记下走的是谁，存档里按名字记（schema_v2.md §C 的 hubs.*.patients）
+            var dying = Npcs[idx];
+            _deadVillagers.Add(SickNameOf(dying));
             Npcs.RemoveAt(idx);
             VillagerDeaths++;
             Say("村那头有人没声了。", 2.8f);
         }
     }
 
+    /// <summary>病人是谁。优先用台词表里的名字，没有就用坐标。</summary>
+    private string SickNameOf(SceneConfig.Npc npc)
+    {
+        var talk = _talks.At(Hub, (int)npc.Cell.X, (int)npc.Cell.Y);
+        if (talk != null && !string.IsNullOrEmpty(talk.Name)) return talk.Name;
+        return $"({(int)npc.Cell.X},{(int)npc.Cell.Y})";
+    }
+
     public void Say(string msg, float seconds = 2.2f)
     {
         LastMessage = msg;
         MessageTime = seconds;
+    }
+
+    // ————————————————————————— 存档 —————————————————————————
+
+    /// <summary>
+    /// 把这一局的运行时状态装成一份存档（schema_v2.md §C）。
+    ///
+    /// 这里只做"搬"，不做"算"：刻数从 Core 的 Clock 取，旗标从 Core 的 FlagStore 取，
+    /// Game 层不自己算任何规则。
+    /// </summary>
+    /// <returns>可以落盘的存档。</returns>
+    public SaveState ToSaveState()
+    {
+        var state = new SaveState
+        {
+            Version = SaveState.CurrentVersion,
+            Seed = 0,
+            Day = 1,
+            Tense = "prologue",
+            Hub = Hub,
+        };
+
+        state.Player.X = Player.Cell.X;
+        state.Player.Y = Player.Cell.Y;
+
+        foreach (var kv in _flags.SnapshotGlobal())
+            state.Flags[kv.Key] = kv.Value;
+
+        foreach (var (hub, clock) in _clocks)
+        {
+            var hubState = new HubState
+            {
+                Entered = true,
+                KeHalf = clock.KeHalf,
+                Nudges = clock.Nudges,
+                CaughtCount = _caught.TryGetValue(hub, out var c) ? c : 0,
+            };
+
+            if (_searched.TryGetValue(hub, out var searched))
+                hubState.Searched = new List<string>(searched);
+
+            foreach (var kv in _flags.SnapshotLocal(hub))
+                hubState.Flags[kv.Key] = kv.Value;
+
+            state.Hubs[hub] = hubState;
+        }
+
+        // 村里死了的人：按名字记在 hubs.hub3.patients 里（值 alive / dying / dead）
+        if (_deadVillagers.Count > 0)
+        {
+            var hubState = state.Hubs.TryGetValue("hub3", out var h3)
+                ? h3
+                : new HubState { Entered = true };
+
+            foreach (var name in _deadVillagers)
+                hubState.Patients[name] = "dead";
+
+            state.Hubs["hub3"] = hubState;
+        }
+
+        // 说过话的人
+        foreach (var key in Talked)
+        {
+            var sep = key.IndexOf(':');
+            var hub = sep > 0 ? key[..sep] : Hub;
+            var id = sep > 0 ? key[(sep + 1)..] : key;
+            if (id.Length == 0) continue;
+
+            var again = _talkCounts.TryGetValue(key, out var n) ? Math.Max(0, n - 1) : 0;
+
+            state.Known.Npcs.Add(new NpcState
+            {
+                Hub = hub,
+                Id = id,
+                Met = true,
+                Again = again,
+            });
+        }
+
+        return state;
+    }
+
+    /// <summary>
+    /// 用一份存档把这一局恢复回来。坏档不会走到这里（坏档在 SaveService 那一层就被拦下了）。
+    /// </summary>
+    /// <param name="state">读出来的存档。null 时什么都不做。</param>
+    public void RestoreFrom(SaveState? state)
+    {
+        if (state == null) return;
+
+        // 旗标：Core 的仓库自己负责全局 / 局部的优先级
+        _flags.Load(state);
+
+        // 每个空间的刻账、搜过的东西、被看见次数
+        foreach (var (hub, hubState) in state.Hubs)
+        {
+            if (!ClockTable.IsKnownHub(hub)) continue;
+
+            _clocks[hub] = Clock.FromState(hub, hubState?.ToClockState());
+            _searched[hub] = hubState?.Searched != null
+                ? new List<string>(hubState.Searched)
+                : new List<string>();
+            _caught[hub] = hubState?.CaughtCount ?? 0;
+        }
+
+        // 村里死了的人
+        _deadVillagers.Clear();
+        VillagerDeaths = 0;
+        if (state.Hubs.TryGetValue("hub3", out var village) && village?.Patients != null)
+            foreach (var (name, status) in village.Patients)
+                if (status == "dead")
+                {
+                    _deadVillagers.Add(name);
+                    VillagerDeaths++;
+                }
+
+        // 说过话的人
+        Talked.Clear();
+        _talkCounts.Clear();
+        foreach (var npc in state.Known.Npcs)
+        {
+            if (npc == null || string.IsNullOrEmpty(npc.Hub) || string.IsNullOrEmpty(npc.Id)) continue;
+
+            var key = $"{npc.Hub}:{npc.Id}";
+            Talked.Add(key);
+            _talkCounts[key] = Math.Max(1, npc.Again + 1);
+        }
+
+        // 回当前所在的那一关。刻账已经在上面装好了，Load 不会再重置它。
+        var where = ClockTable.IsKnownHub(state.Hub) ? state.Hub : "hub1";
+        Load(where);
+
+        if (state.Player.X > 0 && state.Player.Y > 0)
+            Player.Cell = new Vector2((float)state.Player.X, (float)state.Player.Y);
     }
 
     // ————————————————————————— 巡逻 —————————————————————————

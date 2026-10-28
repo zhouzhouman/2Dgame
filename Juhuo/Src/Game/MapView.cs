@@ -203,7 +203,8 @@ public partial class MapView : Node2D
         var result = _world.Search();
         if (result is null)
         {
-            _world.Say("这里没什么可翻的。");
+            // 世界自己说了为什么（比如知识门没开），别把它盖掉
+            if (_world.LastSearchNote.Length == 0) _world.Say("这里没什么可翻的。");
             PromptChanged?.Invoke(_world.LastMessage ?? "");
             return;
         }
@@ -238,7 +239,7 @@ public partial class MapView : Node2D
         // 已搜过的地方留个灰点，提醒"这里我来过"
         foreach (var p in _world.Props)
         {
-            if (!_world.Searched.Contains(p.Point.Id)) continue;
+            if (!_world.IsSearched(p.Point.Id)) continue;
             var c = Screen(p.Cell, 0f, 6f);
             var d = _baked.Scale;
             DrawRect(new Rect2(c.X - d, c.Y - d, d * 2, d * 2), new Color(0.20f, 0.20f, 0.18f, 0.60f));
@@ -467,7 +468,7 @@ public partial class MapView : Node2D
 
         foreach (var p in _world.Props)
         {
-            var done = _world.Searched.Contains(p.Point.Id);
+            var done = _world.IsSearched(p.Point.Id);
             var c = Screen(p.Cell);
             var half = T * _baked.Scale / 2f;
             var r = new Rect2(c.X - half, c.Y - half, T * _baked.Scale, T * _baked.Scale);
