@@ -6,6 +6,10 @@ using Juhuo.Application;
 using Juhuo.Art;
 using Juhuo.Core;
 
+// E1 在 Core 里也有一份 FlagExpression（S1-02，收 FlagProbe 的重载）。Game 这边继续用
+// Application 那份，参数是 (表达式, FlagStore, hub)——这里用别名钉死，免得两个 using 打架。
+using FlagExpression = Juhuo.Application.FlagExpression;
+
 namespace Juhuo;
 
 /// <summary>场景里一件可以搜查的实物。</summary>
@@ -103,6 +107,15 @@ public sealed class World
     private readonly NpcTalkTable _talks;
 
     /// <summary>
+    /// 对话分支。数据表没有条件列时，建出来就是 first / again / interrupt 三段纯文本，
+    /// 和改造前一样；补了条件列就自动有分支（见 <see cref="DialogueBook"/>）。
+    /// </summary>
+    private readonly DialogueBook _book;
+
+    /// <summary>Hub1 的敲门计时。按刻算，不按秒（见 <see cref="KnockTimer"/>）。</summary>
+    private readonly KnockTimer _knock = new();
+
+    /// <summary>
     /// 每个空间一本刻账。刻数只有 Core 说了算，这里只负责取——
     /// Game 层不再自己算 KeUsed / KeLeft（rule_time_clock.md 是唯一数值源）。
     /// </summary>
@@ -131,6 +144,11 @@ public sealed class World
     /// 由表现层接上存档服务，这一层自己不碰文件。
     /// </summary>
     public event Action? StateChanged;
+
+    /// <summary>
+    /// 门外敲了三下。表现层接上它就够——文本在世界这边，界面不用再抄一遍。
+    /// </summary>
+    public event Action? Knocked;
 
     /// <summary>这个空间的刻账。</summary>
     private Clock _clock = new();
@@ -182,6 +200,12 @@ public sealed class World
     /// </summary>
     public string LastSearchNote { get; private set; } = "";
 
+    /// <summary>
+    /// 上一次盘问为什么没成。空串 = 没试过或成了。
+    /// 盘点入口默认是关的：数据表没有 interrogate 那一段，就问不出东西。
+    /// </summary>
+    public string LastTalkNote { get; private set; } = "";
+
     // —— 被发现 ——
     /// <summary>被发现后屏幕边缘的红晕强度，1.2 秒内衰减到 0。</summary>
     public float SpotFlash { get; private set; }
@@ -218,10 +242,11 @@ public sealed class World
     private static readonly string[] HubOrder =
         { "hub1", "hub2", "hub3", "hub4", "hub5", "hub6", "hub7" };
 
-    public World(PointTable table, NpcTalkTable talks)
+    public World(PointTable table, NpcTalkTable talks, DialogueBook? book = null)
     {
         _table = table;
         _talks = talks;
+        _book = book ?? DialogueBook.FromTalks(talks);
         Load("hub1");
     }
 
@@ -296,6 +321,10 @@ public sealed class World
             var to = g.Path[g.Index] - g.Cell;
             if (to.Length() > 0.01f) g.Facing = to.Normalized();
         }
+
+        // 读档回到小院时，刻已经过了线、旗标却没置——补敲一次。
+        // 敲过的档带着 hub1.knock.happened，所以重进不会重放。
+        CheckKnock();
     }
 
     /// <summary>走到出口就进下一个 hub；最后一个 hub 就停在原地。</summary>
@@ -407,6 +436,14 @@ public sealed class World
         // （rule_time_clock.md §3）。记账交给 Core。
         if (spotted % 3 == 0) _clock.SpendInterrogate();
         else _clock.SpendInterrupt();
+
+        // 打断记忆：这个人下次见你，第一句换成"上次你走了"。
+        // 盘问也算打断——话说了一半被摁住，比被看见更该记住。
+        var seerKey = DialogueBook.KeyOfGuard(Hub, seer.Name);
+        if (!_flags.Set(DialogueFlags.Interrupted(seerKey)))
+            GD.PushWarning($"[旗标] 打断记忆写不进去：{seerKey}");
+
+        CheckKnock();
 
         Say(spotted % 3 == 0
             ? "「站住。」他把手按在刀上。你多花了些工夫才脱身。"
@@ -607,21 +644,114 @@ public sealed class World
         return null;
     }
 
-    /// <summary>说一句。第一次给"初见"，之后给"再谈"。</summary>
+    /// <summary>
+    /// 跟人说话。说哪一段由 <see cref="DialogueVariant.Choose"/> 定：
+    /// 初见 → 被打断过 → 再谈。首次 0 刻，其余 1 刻（CANON 3 / rule_time_clock.md §3）。
+    ///
+    /// "被打断后重谈仍按再谈计费"是这条的硬要求：<c>met</c> 一旦成立就不再免费，
+    /// 哪怕这一次说的是被打断的那句。
+    /// </summary>
     public (string Head, string Body)? Talk()
     {
         var who = NearestSpeaker();
         if (who is null) return null;
 
-        var first = Talked.Add(who.Key);
+        var met = Talked.Contains(who.Key);
+        var interrupted = met && _flags.Has(DialogueFlags.Interrupted(who.Key), Hub);
+
+        var variant = DialogueVariant.Choose(met, interrupted, false);
+        var node = _book.Resolve(who.Key, variant, _flags, Hub);
+
+        // 没这一段（或这一段没字）就退回纯文本：again 空了说 first——改造前就是这个行为。
+        var body = node is { Text.Length: > 0 }
+            ? node.Text
+            : met && who.Again.Length > 0 ? who.Again : who.First;
+
+        var label = variant switch
+        {
+            DialogueVariant.First => "初见",
+            DialogueVariant.Interrupt when node is not null => "上次没说完",
+            _ => "再谈",
+        };
+
+        Talked.Add(who.Key);
         _talkCounts[who.Key] = _talkCounts.TryGetValue(who.Key, out var n) ? n + 1 : 1;
 
-        // 首次对话 0 刻，再谈 1 刻（CANON 硬约束 3 / rule_time_clock.md §3）。
-        _clock.SpendTalk(first);
+        _clock.SpendTalk(!met);
 
-        var body = first || who.Again.Length == 0 ? who.First : who.Again;
+        // 打断记忆是一次性的：说过了就清掉，别让这个人一辈子都在"上次你走了"。
+        if (interrupted) _flags.Clear(DialogueFlags.Interrupted(who.Key));
+
+        ApplyFlag(node?.SetFlag);
+
+        CheckKnock();
         StateChanged?.Invoke();
-        return ($"{who.Name}　　{(first ? "初见" : "再谈")}", body);
+        return ($"{who.Name}　　{label}", body);
+    }
+
+    /// <summary>
+    /// 盘问：4 刻，替代打断不是叠加（rule_time_clock.md §3）。
+    ///
+    /// 两道门：这个人得能盘问（旗标 <c>talk.&lt;npc&gt;.allowed</c>），
+    /// 而且台词表里得有 <c>interrogate</c> 那一段——缺一样，入口就是关的（票面要求）。
+    /// 现在 <c>npcs.csv</c> 没有这一列，所以默认全关。
+    /// </summary>
+    public (string Head, string Body)? Interrogate()
+    {
+        var who = NearestSpeaker();
+        if (who is null)
+        {
+            LastTalkNote = "身边没人。";
+            return null;
+        }
+
+        if (!_flags.Has(DialogueFlags.Allowed(who.Key), Hub))
+        {
+            LastTalkNote = "这时候问不出什么。";
+            return null;
+        }
+
+        var node = _book.Resolve(who.Key, DialogueVariant.Interrogate, _flags, Hub);
+        if (node is null)
+        {
+            LastTalkNote = "他没什么可说的。";
+            return null;
+        }
+
+        LastTalkNote = "";
+        _clock.SpendInterrogate();
+        ApplyFlag(node.SetFlag);
+
+        Talked.Add(who.Key);
+        _talkCounts[who.Key] = _talkCounts.TryGetValue(who.Key, out var n) ? n + 1 : 1;
+
+        CheckKnock();
+        StateChanged?.Invoke();
+        return ($"{who.Name}　　盘问", node.Text);
+    }
+
+    /// <summary>身边的人现在能不能盘问。界面拿它决定要不要给出这个入口。</summary>
+    public bool CanInterrogate
+    {
+        get
+        {
+            var who = NearestSpeaker();
+            if (who is null) return false;
+            if (!_flags.Has(DialogueFlags.Allowed(who.Key), Hub)) return false;
+            return _book.Resolve(who.Key, DialogueVariant.Interrogate, _flags, Hub) is not null;
+        }
+    }
+
+    /// <summary>
+    /// 到点就敲门。只敲一次（旗标 <c>hub1.knock.happened</c> 保证），
+    /// 刻从 <see cref="Clock.KeUsedKe"/> 读，这里不自己算。
+    /// </summary>
+    private void CheckKnock()
+    {
+        if (!_knock.TryKnock(_flags, Hub, _clock.KeUsedKe)) return;
+
+        Say("院门被拍响了三下。门外有人站着，没喊你的名字。", 3.6f);
+        Knocked?.Invoke();
     }
 
     /// <summary>
@@ -661,6 +791,7 @@ public sealed class World
         }
 
         var text = first ? p.Point.TextOnce : p.Point.TextRepeat;
+        CheckKnock();
         StateChanged?.Invoke();
         return (text, first, p);
     }

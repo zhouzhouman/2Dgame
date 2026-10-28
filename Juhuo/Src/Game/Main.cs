@@ -28,6 +28,8 @@ public partial class Main : Node2D
     private const int MapTop = 6;
 
     private PointTable _table = default!;
+    private NpcTalkTable _talks = default!;
+    private DialogueBook _book = default!;
     private World _world = default!;
     private MapView _view = default!;
 
@@ -83,11 +85,19 @@ public partial class Main : Node2D
         try
         {
             _table = PointTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/points.csv"));
-            var talks = NpcTalkTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/npcs.csv"));
-            _world = new World(_table, talks);
+
+            // 对话表只解析一次：NpcTalkTable 出文本，DialogueBook 出分支。
+            // 表里没有条件列时，两者内容完全一致（走原逻辑）。
+            var talkCsv = FileAccess.GetFileAsString("res://Content/data/npcs.csv");
+            _talks = NpcTalkTable.FromCsv(talkCsv);
+            _book = DialogueBook.FromCsv(talkCsv);
+            _world = new World(_table, _talks, _book);
 
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
+
+            // 敲门：文本在世界那一层，这里只负责让玩家看见
+            _world.Knocked += () => SetHint(_world.LastMessage ?? "", 4f);
 
             // 读档。坏档给一句人话，从新游戏开始——绝不崩、绝不白屏。
             LoadSave();
@@ -101,7 +111,7 @@ public partial class Main : Node2D
             if (OS.GetCmdlineUserArgs().Contains("--highlight"))
                 _view.ForceHighlight = true;
 
-            GD.Print($"[举火] {_table.All.Count} 件可搜查物、{talks.All.Count} 位可对话 NPC，当前 {_world.Hub}（{World.TitleOf(_world.Hub)}）有 {_world.Props.Count} 个");
+            GD.Print($"[举火] {_table.All.Count} 件可搜查物、{_talks.All.Count} 位可对话 NPC，当前 {_world.Hub}（{World.TitleOf(_world.Hub)}）有 {_world.Props.Count} 个");
 
             if (!_tut.Done)
                 GD.Print($"[引导] 共 {_tutLineCount} 步，当前「{_tut.Line.Key}」");
@@ -168,6 +178,73 @@ public partial class Main : Node2D
                 _world.Player.Cell = new Vector2(t.X + 0.9f, t.Y);
                 var say = _world.Talk();
                 if (say is not null) ShowText(say.Value.Head, say.Value.Body);
+            }
+        }
+
+        // 开发辅助：--knock 在 hub1 连搜几件，验证"第 3 刻敲门、只敲一次"
+        if (OS.GetCmdlineUserArgs().Contains("--knock") && _world is not null)
+        {
+            // 用一局全新的世界，别读玩家那份档：不然"已经敲过"的旗标会让这条自检看着像坏了
+            var w = new World(_table, _talks, _book);
+            var flag = KnockTimer.HappenedFlag;
+            GD.Print($"[敲门] 进 {w.Hub}：刻 {w.KeUsed}/{w.KeBudget}，已敲 {w.Flags.Has(flag, w.Hub)}");
+
+            for (var i = 0; i < 20 && !w.Flags.Has(flag, w.Hub) && w.Props.Count > 0; i++)
+            {
+                var p = w.Props[i % w.Props.Count];
+                w.Player.Cell = p.Cell + new Vector2(0.9f, 0f);
+                w.Search();
+            }
+
+            GD.Print($"[敲门] 搜完：刻 {w.KeUsed}/{w.KeBudget}，happened={w.Flags.Has(flag, w.Hub)}，话「{w.LastMessage}」");
+
+            // 再搜三次，确认不会敲第二遍
+            var before = w.KeUsed;
+            for (var i = 0; i < 3 && w.Props.Count > 0; i++)
+            {
+                var p = w.Props[i % w.Props.Count];
+                w.Player.Cell = p.Cell + new Vector2(0.9f, 0f);
+                w.Search();
+            }
+            GD.Print($"[敲门] 再搜 3 次（{before}→{w.KeUsed} 刻），旗标仍 {w.Flags.Has(flag, w.Hub)}——没再敲");
+        }
+
+        // 开发辅助：--dialogue 验证"初见免费 → 再谈 1 刻 → 被打断过先说那句 → 记忆用掉就清"
+        if (OS.GetCmdlineUserArgs().Contains("--dialogue") && _world is not null)
+        {
+            var w = new World(_table, _talks, _book);
+            w.Load("hub2");
+
+            var t = w.TalksHere().FirstOrDefault();
+            if (t is not null)
+            {
+                w.Player.Cell = new Vector2(t.X, t.Y + 0.9f);
+
+                var a = w.Talk();
+                var keA = w.KeUsed;
+                var b = w.Talk();
+                var keB = w.KeUsed;
+
+                var key = DialogueBook.KeyAt("hub2", t.X, t.Y);
+                w.Flags.Set(DialogueFlags.Interrupted(key));
+                var c = w.Talk();
+                var keC = w.KeUsed;
+
+                GD.Print($"[对话] {t.Name}：初见「{a?.Head}」{keA} 刻；再谈「{b?.Head}」{keB} 刻；打断后「{c?.Head}」{keC} 刻");
+                GD.Print($"[对话] 打断那句 =「{Cut(c?.Body)}」；记忆已清 = {!w.Flags.Has(DialogueFlags.Interrupted(key), "hub2")}");
+            }
+        }
+
+        // 开发辅助：--interrogate 试着盘问身边的人，验证入口是开是关、收几刻
+        if (OS.GetCmdlineUserArgs().Contains("--interrogate") && _world is not null)
+        {
+            var t = _world.TalksHere().FirstOrDefault();
+            if (t is not null)
+            {
+                _world.Player.Cell = new Vector2(t.X, t.Y + 0.9f);
+                var before = _world.KeUsed;
+                var r = _world.Interrogate();
+                GD.Print($"[盘问] 可盘问={_world.CanInterrogate}，结果={(r is null ? "没问成：" + _world.LastTalkNote : r.Value.Head)}，刻 {before}→{_world.KeUsed}");
             }
         }
 
@@ -960,6 +1037,12 @@ public partial class Main : Node2D
     /// <summary>
     /// 数据自检：每一关的每一件东西，四周必须有至少一个能站人的格子够得着。
     /// 只报"够不着"——那是玩家真的会卡住的地方，比任何截图都可靠。
+    ///
+    /// 这里是"只看局部"的口径（点周围八格有人站得住）。
+    /// Core 的 <see cref="ReachAudit"/> 更严（还要求那格从起点走得到），
+    /// 换上去之后 hub4 会报 h4_03 / h4_08 两件——那是真的够不着，
+    /// 但不是这张票能修的（点位归 D3、地图归 D3），所以先留在旧口径，
+    /// 等 hub4 的屋子通了再一行切过去。详见交接单。
     /// </summary>
     private void AuditReach()
     {
@@ -1047,6 +1130,14 @@ public partial class Main : Node2D
         "knowledge" => "？",
         _ => "明面",
     };
+
+    /// <summary>截一小段台词打日志。台词里有换行，整段打出来会把自检刷屏。</summary>
+    private static string Cut(string? text, int n = 16)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var flat = text!.Replace("\n", " ");
+        return flat.Length <= n ? flat : flat[..n] + "…";
+    }
 
     private async Task CaptureAndQuitAsync()
     {

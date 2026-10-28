@@ -4,16 +4,14 @@ using Juhuo.Core;
 namespace Juhuo.Application;
 
 /// <summary>
-/// 旗标表达式求值。
+/// 旗标表达式求值（Application 层薄壳）。
 ///
-/// 表达式长这样（schema_v2.md §A.1 的 <c>requires</c> 列）：
-///   <c>f</c>　　—— 旗标成立
-///   <c>!f</c>　 —— 旗标不成立
-///   <c>f&amp;g</c> —— 两个都成立（最多三项）
+/// 真正的解析与求值已经收进 <see cref="Juhuo.Core.FlagExpression"/>（票号 S1-12），
+/// 这一层只负责把 <see cref="FlagStore"/> + hub 适配成 Core 要的取值委托。
+/// 保留原来的公开签名，<c>World</c> 那边不用改。
 ///
-/// 每一项的取值一律走 <see cref="FlagStore.Has"/> —— 全局优先、全局没有才看空间的局部、
-/// 都没有就是 false。这是全项目唯一的旗标取值入口（rule_flags_save.md §公式），
-/// 这里只负责把字符串拆开，不自己判真假。
+/// 取值规则仍是全项目唯一的旗标入口（rule_flags_save.md §公式）：
+/// 全局优先、全局没有才看空间的局部、都没有就是 false。
 /// </summary>
 public static class FlagExpression
 {
@@ -21,28 +19,14 @@ public static class FlagExpression
     /// 求一条旗标表达式。
     /// </summary>
     /// <param name="expr">表达式。空串 = 无条件成立。</param>
-    /// <param name="flags">旗标仓库。</param>
+    /// <param name="flags">旗标仓库。为 null 时一律不成立（保持旧行为）。</param>
     /// <param name="hub">当前空间 id。查局部作用域时用。</param>
-    /// <returns>成立返回 true。</returns>
+    /// <returns>成立返回 true；语法错误返回 false。</returns>
     public static bool Evaluate(string? expr, FlagStore? flags, string? hub)
     {
         if (flags == null) return false;
-        if (string.IsNullOrWhiteSpace(expr)) return true;
 
-        foreach (var raw in expr!.Split('&'))
-        {
-            var term = raw.Trim();
-            if (term.Length == 0) continue;
-
-            var negated = term[0] == '!';
-            if (negated) term = term[1..].Trim();
-            if (term.Length == 0) continue;
-
-            var value = flags.Has(term, hub);
-            if (negated ? value : !value) return false;
-        }
-
-        return true;
+        return Juhuo.Core.FlagExpression.Evaluate(expr, name => flags.Has(name, hub));
     }
 
     /// <summary>
@@ -50,19 +34,5 @@ public static class FlagExpression
     /// </summary>
     /// <param name="expr">表达式。</param>
     /// <returns>旗标名列表。</returns>
-    public static string[] Names(string? expr)
-    {
-        if (string.IsNullOrWhiteSpace(expr)) return Array.Empty<string>();
-
-        var names = new System.Collections.Generic.List<string>();
-        foreach (var raw in expr!.Split('&'))
-        {
-            var term = raw.Trim();
-            if (term.StartsWith("!", StringComparison.Ordinal)) term = term[1..].Trim();
-            if (term.Length == 0) continue;
-            if (!names.Contains(term)) names.Add(term);
-        }
-
-        return names.ToArray();
-    }
+    public static string[] Names(string? expr) => Juhuo.Core.FlagExpression.Names(expr);
 }

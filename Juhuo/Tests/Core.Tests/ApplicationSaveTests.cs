@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Juhuo.Application;
 using Juhuo.Core;
 using Xunit;
+
 
 namespace Juhuo.Core.Tests;
 
@@ -338,15 +339,15 @@ public class ApplicationSaveTests
         var flags = new FlagStore();
         flags.Set("has_letter_unsent");
 
-        Assert.True(FlagExpression.Evaluate("", flags, "hub6"));
-        Assert.True(FlagExpression.Evaluate("has_letter_unsent", flags, "hub6"));
-        Assert.False(FlagExpression.Evaluate("!has_letter_unsent", flags, "hub6"));
-        Assert.True(FlagExpression.Evaluate("!knows_herb_path", flags, "hub6"));
-        Assert.True(FlagExpression.Evaluate("has_letter_unsent&!knows_herb_path", flags, "hub6"));
-        Assert.False(FlagExpression.Evaluate("has_letter_unsent&knows_herb_path", flags, "hub6"));
+        Assert.True(Juhuo.Application.FlagExpression.Evaluate("", flags, "hub6"));
+        Assert.True(Juhuo.Application.FlagExpression.Evaluate("has_letter_unsent", flags, "hub6"));
+        Assert.False(Juhuo.Application.FlagExpression.Evaluate("!has_letter_unsent", flags, "hub6"));
+        Assert.True(Juhuo.Application.FlagExpression.Evaluate("!knows_herb_path", flags, "hub6"));
+        Assert.True(Juhuo.Application.FlagExpression.Evaluate("has_letter_unsent&!knows_herb_path", flags, "hub6"));
+        Assert.False(Juhuo.Application.FlagExpression.Evaluate("has_letter_unsent&knows_herb_path", flags, "hub6"));
 
         // 缺失即 false
-        Assert.False(FlagExpression.Evaluate("knows_herb_path", flags, "hub6"));
+        Assert.False(Juhuo.Application.FlagExpression.Evaluate("knows_herb_path", flags, "hub6"));
     }
 
     [Fact]

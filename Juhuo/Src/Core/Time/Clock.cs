@@ -66,6 +66,9 @@ public sealed class Clock
     private int _keHalf;
     private int _nudges;
 
+    /// <summary>已经播报掉（消费掉）的催促次数。存档里不单列，读档时按"全部已播"处理。</summary>
+    private int _nudged;
+
     /// <summary>
     /// 开一本新账。预算按 hub 查 <see cref="ClockTable"/>；查不到按 8 刻兜底（不静默用 0）。
     /// </summary>
@@ -93,6 +96,62 @@ public sealed class Clock
 
     /// <summary>已触发催促次数。</summary>
     public int Nudges => _nudges;
+
+    /// <summary>
+    /// 第 <paramref name="n"/> 次催促触发时的半刻位置（n 从 1 起）：
+    /// 第 1 次正好是 <see cref="KeBudgetHalf"/>（用光预算），此后每
+    /// <see cref="NudgeStepHalf"/> 半刻再催一次（rule_time_clock.md §4）。
+    /// </summary>
+    /// <param name="n">第几次，从 1 起。</param>
+    /// <returns>触发所需的半刻数；n &lt; 1 或超过 <see cref="MaxNudges"/> 返回 -1。</returns>
+    public int NudgeAtHalf(int n)
+    {
+        if (n < 1 || n > MaxNudges) return -1;
+
+        return KeBudgetHalf + NudgeStepHalf * (n - 1);
+    }
+
+    /// <summary>
+    /// 账上已经触发了、但还没播报的催促次数（0–5）。
+    /// 结算动作时只加计数，Game 播完事件后调 <see cref="MarkNudged"/> 消费掉，
+    /// 这样"花完刻"与"播代价"能分成两步（rule_time_clock.md §边界 结算顺序 6）。
+    /// </summary>
+    public int PendingNudges
+    {
+        get
+        {
+            var pending = _nudges - _nudged;
+            return pending < 0 ? 0 : pending;
+        }
+    }
+
+    /// <summary>
+    /// 消费一次催促：Game 播完那条事件后调用。
+    /// </summary>
+    /// <returns>确实有可消费的催促返回 true；没有返回 false（不重复播）。</returns>
+    public bool MarkNudged()
+    {
+        if (PendingNudges <= 0) return false;
+
+        _nudged++;
+        return true;
+    }
+
+    /// <summary>
+    /// 探索率：已用整刻 / 预算整刻，夹到 0–1。只在这里做一次除法，
+    /// 刻本身仍按半刻整数累计（rule_time_clock.md §边界 取整方式）。
+    /// </summary>
+    public double Coverage
+    {
+        get
+        {
+            if (_budgetKe <= 0) return 0;
+
+            var ratio = KeUsedKe / (double)_budgetKe;
+            if (ratio < 0) return 0;
+            return ratio > 1 ? 1 : ratio;
+        }
+    }
 
     /// <summary>
     /// 预算是不是已经用尽或超出（剩 0 刻）。与催促触发线是同一条线：半刻 ≥ 2B。
@@ -187,6 +246,7 @@ public sealed class Clock
         _budgetKe = budget.Value;
         _keHalf = 0;
         _nudges = 0;
+        _nudged = 0;
         return true;
     }
 
@@ -211,6 +271,10 @@ public sealed class Clock
         clock._keHalf = Math.Clamp(state.KeHalf, 0, cap);
         clock._nudges = Math.Clamp(state.Nudges, 0, MaxNudges);
         clock.RefreshNudges();
+
+        // 读档时账上的催促都已经是"玩家看过并承担过代价"的，
+        // 不能因为重新进入就把旧催促再播一遍。
+        clock._nudged = clock._nudges;
         return clock;
     }
 
