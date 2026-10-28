@@ -11,6 +11,7 @@ Juhuo/.godot/
 .vs/
 .idea/
 Juhuo/shot.png
+Juhuo/build/
 *.log
 
 # 工作区记忆（本地，不进仓库）
