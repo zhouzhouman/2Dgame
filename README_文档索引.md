@@ -43,7 +43,7 @@
 | `举火_序章关卡设计_v1.0.md` | 7 空间 / 12 节拍 / 刻预算 / 三层交互 / 隐藏体系 | 稳定（含 v1.1 刻修订） |
 | `举火_序章关卡布局_白幡村_v1.0.md` | 34×22 tile 图 + 8 NPC + 2 条巡逻 + 20 条文本 | 稳定 |
 | `举火_序章布局图集_其余六空间_v1.0.md` | 6 张骨架图 + 关键点 + 核心机制 | 稳定 |
-| `举火_序章NPC对话_v1.0.md` | 23 位 NPC 的首次/再谈/赠礼/打断台词 | 新增 |
+| `举火_序章NPC对话_v1.0.md` | 28 位 NPC（30 处放置）的首次/再谈/赠礼/打断台词 | 新增 |
 | `举火_序章数据表规范_白幡村_v1.0.md` | 字段规范 + 判定流程 + 旗标 + 存档结构 | 稳定 |
 
 ### 数据
@@ -83,7 +83,7 @@
 | `tools/build_editor.py` | 构建编辑器：复用同一份地形 + 120 条数据，生成单文件 HTML | `python tools/build_editor.py` |
 | `tools/gen_prologue_data.py` | 生成并校验 120 条数据（坐标必须落在可通行格） | `python tools/gen_prologue_data.py` |
 | `tools/extract_texts.py` | 抽取 240 条文本，生成可本地化文本表 | `python tools/extract_texts.py` |
-| `tools/extract_npc_dialogue.py` | **从剧情文档抽 22 位 NPC 台词 → npcs.csv** | `python tools/extract_npc_dialogue.py` |
+| `tools/extract_npc_dialogue.py` | **从剧情文档抽 28 位 NPC（30 处放置）台词 → npcs.csv** | `python tools/extract_npc_dialogue.py` |
 | `tools/sim_balance.py` | 30 年经济模拟 + 战斗推演 | `python tools/sim_balance.py` |
 | `tools/art_preview.py` | **不开引擎预览 6 种材质配色**（左原色/右光照后），调色用它 | `python tools/art_preview.py` |
 | `tools/sample_png.py` | 手写 PNG 解码，采样任意像素色值 | `python tools/sample_png.py a.png 120 200` |
@@ -125,7 +125,7 @@
 | 音频实际素材 | 低 | 需求单已有 |
 | 全文本翻译 | 低 | 文本表已就绪（240 条，en/ja 空列待填） |
 
-> 已关闭：地图编辑器、24 节点脚本、事件卡体系、文本表抽取、6 节点完整对白、序章美术、主角自由移动 + 实物搜查 + Ctrl 高亮 + 七场景串联 + OFL 字体、巡逻视野 + 被发现 + 村中病死、22 位 NPC 对话接进引擎 + 四向行走图、**斜角交互 + 出口带路 + 室内外判定修正**。
+> 已关闭：地图编辑器、24 节点脚本、事件卡体系、文本表抽取、6 节点完整对白、序章美术、主角自由移动 + 实物搜查 + Ctrl 高亮 + 七场景串联 + OFL 字体、巡逻视野 + 被发现 + 村中病死、28 位 NPC（30 处放置）对话接进引擎 + 四向行走图、**斜角交互 + 出口带路 + 室内外判定修正**。
 
 ---
 

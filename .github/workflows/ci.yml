@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # G0 门禁之一：Core 层单测。Core 是纯 C#，不依赖引擎，所以这一步能在任何机器上跑。
+  test:
+    name: Core 单测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: 编译
+        run: dotnet build Juhuo/Juhuo.sln --nologo
+
+      - name: 单测
+        run: dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj --nologo -v q
+
+  # G0 门禁之二：内容校验。坐标越界 / 不可通行 / 同格重叠 / 空文本 / 引用缺失，有一条就红。
+  validate:
+    name: 内容校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: 校验器自测（五类错必须都能报出）
+        run: python tools/validate.py --selftest
+
+      - name: 校验当前内容
+        run: python tools/validate.py
+
+  # G0 门禁之三：Core 纯净性。Src/Core 里出现 Godot 引用就是事故，机器校验，不靠自觉。
+  purity:
+    name: Core 纯净性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Src/Core 不得引用 Godot
+        run: |
+          if grep -rn "using Godot" Juhuo/Src/Core --include="*.cs"; then
+            echo "::error::Src/Core 里出现了 using Godot"
+            exit 1
+          fi
+          if grep -rn "GodotSharp" Juhuo/Src/Core --include="*.cs" --include="*.csproj"; then
+            echo "::error::Src/Core 里出现了 GodotSharp 引用"
+            exit 1
+          fi
+          echo "Core 纯净"
+
+  # 出包 job 暂缓：Juhuo/export_presets.cfg 还没建（缺 "Windows Desktop" 预设），
+  # 加上导出模板后即可解除注释。

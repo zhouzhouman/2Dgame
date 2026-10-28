@@ -52,15 +52,20 @@
 ## 验收命令（每次交付都跑，不许只看报告）
 
 ```bash
-dotnet build Juhuo.sln
-dotnet test Tests/Core.Tests/Core.Tests.csproj
+GODOT="$(python tools/godot_path.py)"
+
+dotnet build Juhuo/Juhuo.sln
+dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj
 python tools/gen_prologue_data.py
-godot --headless --path Juhuo -- --audit
-godot --headless --path Juhuo -- --chain
-godot --headless --path Juhuo -- --tutrun
-godot --path Juhuo -- --shot --hub=hub3
+python tools/validate.py
+"$GODOT" --headless --path Juhuo --quit -- --audit
+"$GODOT" --headless --path Juhuo --quit -- --chain
+"$GODOT" --headless --path Juhuo --quit -- --tutrun
+"$GODOT" --path Juhuo -- --shot --hub=hub3
 python tools/sim_balance.py
 ```
+
+三条坑：`--quit` 必须在 `--` 之前；`dotnet test` 路径带 `Juhuo/` 前缀；`--audit` 自身不退出（Q-001）。
 
 新功能如果没有对应的无头验证参数，**直接判 PARTIAL**，并开票要求补。
 

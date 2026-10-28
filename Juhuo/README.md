@@ -6,6 +6,9 @@ Godot 4.7.2 (.NET) + C# 12 / .NET 8 ｜ 2D 俯视像素 ｜ Windows / Linux
 
 ## 一分钟跑起来
 
+> **本节命令在 `Juhuo/` 目录内执行**（`cd Juhuo`）。在仓库根执行时，路径要加 `Juhuo/` 前缀，例如 `dotnet build Juhuo/Juhuo.sln`。
+> `godot` 若不在 PATH，用解析脚本取绝对路径：`$GODOT = python ../tools/godot_path.py`。
+
 ```powershell
 # 1. 编译
 dotnet build Juhuo.sln
@@ -23,6 +26,9 @@ godot --path .
 godot --headless --path . --quit
 # 期望输出：[举火] 载入 120 个可搜点，当前 hub3 有 29 个
 ```
+
+> `--quit` 必须写在 `--` 之前。`--audit` / `--chain` / `--tutrun` 都是同步自检，加上 `--quit` 会在跑完后正常退出；
+> 不加 `--quit` 时引擎会一直挂着（`--audit` 自身不退出，见缺陷 Q-001）。
 
 ### 开发辅助参数
 
@@ -94,7 +100,7 @@ Juhuo/
 │   ├── Core/                ★ 纯 C#，零 Godot 引用
 │   ├── Application/         会话与流程
 │   └── Game/                Godot 节点与表现
-├── Tests/Core.Tests/        xUnit（7 个测试）
+├── Tests/Core.Tests/        xUnit（16 个测试）
 └── Assets/Fonts/            字体说明（发行前必须替换系统字体）
 ```
 
@@ -122,7 +128,7 @@ Src/Core         → 不引用 Godot，CI 会检查
 | 主角自由行走（WASD / 方向键，分轴碰撞） | ✅ |
 | 靠近实物按 E 搜查（八方向，含斜角） | ✅ |
 | 按住 Ctrl 高亮全场可交互物 | ✅ |
-| 22 位 NPC 对话（初见 / 再谈） | ✅ |
+| 28 位 NPC（30 处放置）对话（初见 / 再谈） | ✅ |
 | 四向行走图（程序化图集，换 PNG 只改一行） | ✅ |
 | 巡逻衙役 + 视锥 + 被发现 | ✅ |
 | 七场景串联（出口木牌 + 箭头 + 提示） | ✅ |
