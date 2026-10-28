@@ -262,7 +262,9 @@ def main():
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        '举火_序章数据_全关卡_v1.1.csv')
     with open(out, 'w', encoding='utf-8-sig', newline='') as f:
-        wr = csv.writer(f, quoting=csv.QUOTE_ALL)
+        # lineterminator='\n'：Git 里存的是 LF（见 .gitattributes 的 *.csv text eol=lf）。
+        # 用默认的 \r\n 会让每次重新生成都产生"整份文件都改了"的假 diff。
+        wr = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator='\n')
         wr.writerow(['hub', 'id', 'mark', 'x', 'y', 'layer', 'name', 'requires',
                      'text_once', 'text_repeat', 'loot', 'set_flag', 'watch_npc', 'cost'])
         wr.writerows(rows)
