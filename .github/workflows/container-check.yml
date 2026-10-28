@@ -1,0 +1,76 @@
+# 容器门禁：在 godot-ci 镜像里跑引擎自检与出包
+#
+# 为什么单独一个文件、并且只手动触发
+#   本机拉不到这个镜像（DaoCloud 加速器把它挡在白名单外，见 QA/bugs/Q-013.md），
+#   所以这套流程**还没在真实容器里跑通过一次**。没验过的东西不挂在每次 push 上——
+#   否则一推就红，红久了就没人看。
+#   等你在 GitHub 上手动跑绿一次，把下面 on: 里的 workflow_dispatch 改成 push，就转常态。
+#
+# 镜像 tag 的命名是「版本-mono」，不是「mono-版本」：
+#   barichello/godot-ci:mono-4.7.2  ← 这个（manifest 能解析，实测存在）
+#   barichello/godot-ci:4.7.2-mono  ← 这个拉不到
+
+name: container-check
+
+on:
+  workflow_dispatch:      # 手动触发；跑绿后可加 push
+  # push:
+  #   branches: [main]
+
+jobs:
+  smoke:
+    name: 容器内引擎自检
+    runs-on: ubuntu-latest
+    container: barichello/godot-ci:mono-4.7.2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境自检（先看清楚容器里到底有什么）
+        run: |
+          echo "--- godot ---"
+          godot --version || true
+          echo "--- dotnet ---"
+          dotnet --list-sdks || true
+          echo "--- 导出模板 ---"
+          ls -1 "$HOME/.local/share/godot/export_templates" 2>/dev/null || echo "（无模板目录）"
+
+      - name: 编译
+        run: dotnet build Juhuo/Juhuo.sln --nologo
+
+      - name: 单测
+        run: dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj --nologo -v q
+
+      - name: 关卡可达性
+        run: godot --headless --path Juhuo -- --audit
+
+      - name: 七关串联
+        run: godot --headless --path Juhuo --quit -- --chain
+
+      - name: 引导五步
+        run: godot --headless --path Juhuo --quit -- --tutrun
+
+      - name: 存档自检
+        run: godot --headless --path Juhuo --quit -- --savetest
+
+  export:
+    name: 容器内出包（Windows + Linux）
+    runs-on: ubuntu-latest
+    needs: smoke
+    container: barichello/godot-ci:mono-4.7.2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译
+        run: dotnet build Juhuo/Juhuo.sln --nologo
+
+      - name: 导出
+        run: |
+          mkdir -p build
+          godot --headless --path Juhuo --export-release "Windows Desktop" "build/juhuo.exe"
+          godot --headless --path Juhuo --export-release "Linux" "build/juhuo.x86_64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: juhuo-build
+          path: build/
+          if-no-files-found: error
