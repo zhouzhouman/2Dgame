@@ -20,7 +20,7 @@
 | 正篇月循环、朝会奏报、财政、事件卡、编年史 | ⬜ 待做（S3） |
 | 660 张事件卡、24 节点完整对白、40 条律法、8 区 | ⬜ 待做（M2–M3） |
 
-单测 16 条全绿；120 件可搜物无一“够不着”。
+单测 97 条全绿；120 件可搜物无一“够不着”；七关串联、引导五步、存档读写都有自检。一条命令验全部：`bash tools/smoke.sh`。
 
 ---
 
@@ -50,6 +50,9 @@ dotnet test Juhuo/Tests/Core.Tests/Core.Tests.csproj
 # 容器 / 沙箱里 NuGet 读不到 ProgramFiles、LOCALAPPDATA 时，用兜底脚本
 bash tools/dotnet.sh build Juhuo/Juhuo.sln
 bash tools/dotnet.sh test Juhuo/Tests/Core.Tests/Core.Tests.csproj
+
+# 一键验全部门禁（编译 / 单测 / 内容校验 / 纯净性 / 可达性 / 七关 / 引导 / 存档）
+bash tools/smoke.sh          # 加 --fast 跳过引擎自检
 
 # Godot 的绝对路径交给脚本解析，不依赖 PATH
 GODOT="$(python tools/godot_path.py)"
