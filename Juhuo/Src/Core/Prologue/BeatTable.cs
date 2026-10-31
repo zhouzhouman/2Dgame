@@ -109,6 +109,7 @@ public sealed class BeatTable
                 Get("requires"),
                 sets,
                 Get("trigger"),
+                SplitOptions(Get("options")),
                 Get("note")));
         }
 
@@ -148,6 +149,25 @@ public sealed class BeatTable
         {
             var name = p.Trim();
             if (name.Length > 0) list.Add(name);
+        }
+
+        return list.ToArray();
+    }
+
+    /// <summary>
+    /// 把 <c>options</c> 列的竖线分隔值拆成选项文本。缺列或空白 = 空数组。
+    /// 空数组是合法的：表示这一拍还没有可选项文案，表现层退化成单一的"继续"。
+    /// </summary>
+    private static string[] SplitOptions(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+
+        var parts = raw.Split('|');
+        var list = new List<string>(parts.Length);
+        foreach (var p in parts)
+        {
+            var text = p.Trim();
+            if (text.Length > 0) list.Add(text);
         }
 
         return list.ToArray();

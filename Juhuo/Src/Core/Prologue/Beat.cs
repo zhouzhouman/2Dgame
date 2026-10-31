@@ -11,6 +11,10 @@ namespace Juhuo.Core;
 /// <param name="Requires">前置旗标表达式，语法见 <see cref="FlagExpression"/>；空串 = 无条件。</param>
 /// <param name="Sets">完成时置的旗标，CSV 里逗号分隔，可能为空。</param>
 /// <param name="Trigger">触发方式（choice / knock / search），表现层按这个挑交互。</param>
+/// <param name="Options">
+/// 选择型节拍的选项文本，CSV 里用 <c>|</c> 分隔；非选择型为空数组。
+/// 空数组不是错误——表示"这一拍还没有可选项文案"，表现层退化成单一的"继续"。
+/// </param>
 /// <param name="Note">设计备注，只给人看，不参与判定。</param>
 public sealed record Beat(
     string Id,
@@ -20,4 +24,5 @@ public sealed record Beat(
     string Requires,
     string[] Sets,
     string Trigger,
+    string[] Options,
     string Note);

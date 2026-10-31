@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://cfaeysah1ocq"
+
+[deps]
+
+files=["res://Content/data/beats.name.translation", "res://Content/data/beats.hub.translation", "res://Content/data/beats.day.translation", "res://Content/data/beats.requires.translation", "res://Content/data/beats.sets.translation", "res://Content/data/beats.trigger.translation", "res://Content/data/beats.note.translation"]
+
+source_file="res://Content/data/beats.csv"
+dest_files=["res://Content/data/beats.name.translation", "res://Content/data/beats.hub.translation", "res://Content/data/beats.day.translation", "res://Content/data/beats.requires.translation", "res://Content/data/beats.sets.translation", "res://Content/data/beats.trigger.translation", "res://Content/data/beats.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

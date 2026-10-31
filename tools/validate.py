@@ -66,7 +66,7 @@ NEIGHBORS = ((0, -1, 3), (0, 1, 3), (-1, 0, 3), (1, 0, 3),
 POINT_COLS = ["hub", "id", "mark", "x", "y", "layer", "name", "requires",
               "text_once", "text_repeat", "loot", "set_flag", "watch_npc", "cost"]
 NPC_COLS = ["hub", "name", "x", "y", "first", "again"]
-BEATS_COLS = ["id", "name", "hub", "day", "requires", "sets", "trigger", "note"]
+BEATS_COLS = ["id", "name", "hub", "day", "requires", "sets", "trigger", "options", "note"]
 
 # 文档/校对用的那一份（生成器写；与游戏读的那份同源）
 DOC_CSV = os.path.join(ROOT, "举火_序章数据_全关卡_v1.1.csv")
@@ -392,6 +392,16 @@ def check_beats(path):
                                   "下划线式 2–4 段全小写，或冻结旧名，≤40 字节）" % flag))
 
         trig = (r.get("trigger") or "").strip()
+        raw_opts = (r.get("options") or "").strip()
+        opts = [x.strip() for x in raw_opts.split("|") if x.strip()]
+        if trig == "choice":
+            # 0 项合法（文案还没写，表现层退化成"继续"）；1 项没意义，多半是把分隔符写错了。
+            if len(opts) == 1:
+                errors.append(Err("E10", hub or "?", bid or where, "-",
+                                  "options 只有 1 项 %r（多项请用 | 分隔；没有文案就留空）" % opts[0]))
+        elif opts:
+            errors.append(Err("E10", hub or "?", bid or where, "-",
+                              "%s 型节拍不该有 options（实际 %r）" % (trig, raw_opts)))
         if trig not in TRIGGERS:
             errors.append(Err("E10", hub or "?", bid or where, "-",
                               "trigger=%r 不在 %s" % (trig, "/".join(sorted(TRIGGERS)))))
