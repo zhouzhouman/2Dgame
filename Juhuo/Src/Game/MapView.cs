@@ -43,6 +43,15 @@ public partial class MapView : Node2D
     public event Action<Interactable?>? NearChanged;
     public event Action? Exited;
 
+    /// <summary>搜到东西了，把点位 id 递出去（节拍要按点位认"搜到空仓"）。</summary>
+    public event Action<string>? Searched;
+
+    /// <summary>
+    /// 手边没有实物时按 E 该做的事（节拍退化成"进到这里按 E 完成"时用）。
+    /// 返回 true 表示这一次 E 被接住了，别再补一句"这里没什么可翻的"。
+    /// </summary>
+    public Func<bool>? InteractFallback { get; set; }
+
     public void Setup(World world, BakedMap baked)
     {
         _world = world;
@@ -173,6 +182,9 @@ public partial class MapView : Node2D
             return;
         }
 
+        // 面板（操作说明 / 选项）压在上面时，E 归面板管，别顺手把身边的东西也翻了。
+        if (UiBlocking) return;
+
         // 用实时判定，不读 _atExit 缓存：缓存是给底部提示用的，
         // 而且它只在 _Process 里更新，测试钩子调进来时会是一帧前的旧值。
         if (AtExit())
@@ -203,6 +215,9 @@ public partial class MapView : Node2D
         var result = _world.Search();
         if (result is null)
         {
+            // 节拍的退化路径：这一处有一拍"按 E 完成"，而手边没有实物可翻。
+            if (_world.Nearest() is null && InteractFallback is not null && InteractFallback()) return;
+
             // 世界自己说了为什么（比如知识门没开），别把它盖掉
             if (_world.LastSearchNote.Length == 0) _world.Say("这里没什么可翻的。");
             PromptChanged?.Invoke(_world.LastMessage ?? "");
@@ -214,6 +229,7 @@ public partial class MapView : Node2D
         if (!string.IsNullOrEmpty(prop.Point.Loot)) head += $"　　+ {prop.Point.Loot}";
 
         TextShown?.Invoke(head, text);
+        Searched?.Invoke(prop.Point.Id);
 
         if (first && _world.KeLeft == 0)
             _world.Say("天快黑了。剩下的地方，你今天看不完了。");

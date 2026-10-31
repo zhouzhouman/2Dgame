@@ -14,6 +14,8 @@ namespace Juhuo;
 /// 操作：
 ///   WASD / 方向键  走动
 ///   E / 空格       搜查 · 交谈 · 离开（对话开着时＝看完了）
+///   1–4            选项面板里挑一项
+///   Enter          选项面板里确认
 ///   Ctrl（按住）   把当前场景所有可交互物框出来
 ///   Esc            关掉对话；什么都没开时打开操作说明
 ///   H              操作说明
@@ -67,6 +69,31 @@ public partial class Main : Node2D
     /// <summary>存档服务。文件动作由 Godot 那份提供，规则由 Core 那一层管。</summary>
     private SaveService _save = default!;
 
+    // —— 十二节拍 ——
+    /// <summary>节拍表（beats.csv）。</summary>
+    private BeatTable _beatTable = default!;
+
+    /// <summary>节拍运行器：日推进、选项、HUD 文案都在这一层（Application）。</summary>
+    private PrologueBeats? _beats;
+
+    /// <summary>读进来的那份档。节拍状态机要照它恢复，所以先留一手。</summary>
+    private SaveState? _loadedState;
+
+    /// <summary>HUD 最上面那一行："第 3 天 · 废驿 · 该做：③ 第一口锅"。</summary>
+    private Label _beatLine = default!;
+
+    // —— 选项面板 ——
+    private const int MaxOptions = 4;
+
+    private Panel _choice = default!;
+    private Label _choiceHead = default!;
+    private readonly Label[] _choiceItems = new Label[MaxOptions];
+    private readonly string[] _choiceText = new string[MaxOptions];
+    private Label _choiceFoot = default!;
+    private Beat? _choiceBeat;
+    private int _choiceSel;
+    private bool _choiceOpen;
+
     /// <summary>这份档来自更新的版本，不许读也不许盖（rule_flags_save.md §4）。</summary>
     private bool _saveBlocked;
 
@@ -93,18 +120,41 @@ public partial class Main : Node2D
             _book = DialogueBook.FromCsv(talkCsv);
             _world = new World(_table, _talks, _book);
 
+            // 十二节拍：表是数据，状态机是 Core，接法是本票（S1-06c）。
+            _beatTable = BeatTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/beats.csv"));
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
-            // 敲门：文本在世界那一层，这里只负责让玩家看见
-            _world.Knocked += () => SetHint(_world.LastMessage ?? "", 4f);
+            // 敲门：文本在世界那一层，这里只负责让玩家看见，并把 b02 记上
+            _world.Knocked += OnKnocked;
 
             // 读档。坏档给一句人话，从新游戏开始——绝不崩、绝不白屏。
             LoadSave();
 
+            // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
+            // （S1-06 交接单的第二个坑：顺序写反，十二拍一起变 Locked）。
+            _beats = PrologueBeats.FromState(_beatTable, _world.Flags, _loadedState);
+            SettleKnock();
+            GD.Print($"[节拍] 第 {_beats.Day} 天，已做 {_beats.Progress.DoneCount}/{_beats.Progress.TotalCount} 拍");
+
             foreach (var a in OS.GetCmdlineUserArgs())
                 if (a.StartsWith("--hub=", StringComparison.Ordinal))
                     _world.Load(a[6..]);
+
+            // 开发辅助：--beatskip=2 在内存里把前两拍做掉（**不落盘**），
+            // 用来截"第 N 拍"那一帧，或验证某一处这会儿该弹什么。
+            foreach (var a in args)
+            {
+                if (!a.StartsWith("--beatskip=", StringComparison.Ordinal)) continue;
+                if (!int.TryParse(a[11..], out var skip)) continue;
+
+                _saveBlocked = true;                 // 只改这一次运行，别把玩家那份档盖了
+                for (var i = 0; i < skip && i < _beatTable.Count; i++)
+                    _beats.Complete(_beatTable.All[i]);
+
+                GD.Print($"[节拍·跳] 做到第 {skip} 拍 → 第 {_beats.Day} 天，当前 {_beats.Current?.Id ?? "无"}");
+            }
 
             Mount();
 
@@ -292,6 +342,21 @@ public partial class Main : Node2D
             GD.Print($"[出口] 第二次 E：{from} → {_world.Hub}（{World.TitleOf(_world.Hub)}）");
         }
 
+        // 开发辅助：--beats 打印十二节拍这张表（当前进度、四态、当前那一拍），然后退出
+        if (OS.GetCmdlineUserArgs().Contains("--beats"))
+        {
+            if (_beats is null)
+            {
+                GD.Print("[节拍] 没有节拍表：beats.csv 读不进来。");
+            }
+            else
+            {
+                foreach (var line in _beats.DescribeTable()) GD.Print(line);
+            }
+
+            _quitAfterFrame = true;
+        }
+
         // 开发辅助：--savetest 写一份档 → 重读 → 逐字段比对 → 退出
         if (OS.GetCmdlineUserArgs().Contains("--savetest"))
         {
@@ -344,6 +409,13 @@ public partial class Main : Node2D
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
 
+        // 选项面板开着时，键盘归它：数字挑、回车落、Esc 稍后再说。
+        if (_choiceOpen)
+        {
+            HandleChoiceKey(k.Keycode);
+            return;
+        }
+
         switch (k.Keycode)
         {
             case Key.H:
@@ -356,6 +428,41 @@ public partial class Main : Node2D
                 else ToggleHelp();
                 break;
         }
+    }
+
+    /// <summary>选项面板的按键。数字键只认到选项个数为止，多按的不算。</summary>
+    private void HandleChoiceKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Key1 or Key.Kp1: SelectChoice(0); break;
+            case Key.Key2 or Key.Kp2: SelectChoice(1); break;
+            case Key.Key3 or Key.Kp3: SelectChoice(2); break;
+            case Key.Key4 or Key.Kp4: SelectChoice(3); break;
+
+            case Key.Enter:
+            case Key.KpEnter:
+            case Key.E:
+            case Key.Space:
+                ConfirmChoice();
+                break;
+
+            case Key.Escape:
+                // 先让他看完这一处再说。离开这里再回来，这一拍还会再问一次。
+                CloseChoice(restoreTutorial: true);
+                SetHint("这件事还等着你。", 3f);
+                break;
+        }
+    }
+
+    private void SelectChoice(int index)
+    {
+        var count = _choiceBeat?.Options.Length ?? 0;
+        if (count == 0) return;              // 没有选项文案，只有"继续"
+        if (index < 0 || index >= count) return;
+
+        _choiceSel = index;
+        PaintChoice();
     }
 
     // ————————————————————————— 新手引导 —————————————————————————
@@ -512,6 +619,8 @@ public partial class Main : Node2D
             _view.PromptChanged += t => SetHint(t);
             _view.NearChanged += OnNearChanged;
             _view.Exited += OnExit;
+            _view.Searched += OnSearched;
+            _view.InteractFallback = TrySearchBeatFallback;
         }
         else
         {
@@ -522,6 +631,9 @@ public partial class Main : Node2D
             _view.UiBlocking = _helpOpen;
         }
 
+        // 换了一处，上一个空间没答的选项先收起来：它属于那一段路，不该跟着人走。
+        CloseChoice(restoreTutorial: false);
+
         _spawnCell = _world.Player.Cell;
         _idleHere = 0f;
         _ctrlNudged = false;
@@ -531,6 +643,9 @@ public partial class Main : Node2D
         UpdateChrome();
         RefreshHint();
         PaintTutorial();
+
+        // 进这一处、正好有一拍要选：把面板推上来。
+        TryShowChoice();
     }
 
     private void OnExit()
@@ -620,7 +735,7 @@ public partial class Main : Node2D
         if (_view is not null)
         {
             _view.SetBoxOpen(false);
-            _view.UiBlocking = _helpOpen;
+            _view.UiBlocking = _helpOpen || _choiceOpen;
         }
 
         _hint.Visible = true;
@@ -635,7 +750,7 @@ public partial class Main : Node2D
         _helpOpen = !_helpOpen;
         _help.Visible = _helpOpen;
 
-        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
 
         if (_helpOpen)
         {
@@ -656,6 +771,211 @@ public partial class Main : Node2D
         _title.Text = World.TitleOf(_world.Hub);
         var searched = _world.Props.Count(p => _world.IsSearched(p.Point.Id));
         _subtitle.Text = $"刻 {_world.KeUsed}/{_world.KeBudget}　·　已搜 {searched}/{_world.Props.Count}";
+
+        if (_beatLine is not null)
+            _beatLine.Text = _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
+    }
+
+    /// <summary>
+    /// HUD 里的空间短名：标题是"逃亡路 · 废驿"，那一行只放得下后半截。
+    /// 标题只有一份（<see cref="World.TitleOf"/>），这里只做截取，不再抄一张表。
+    /// </summary>
+    private static string ShortHub(string hub)
+    {
+        var title = World.TitleOf(hub);
+        var i = title.LastIndexOf('·');
+        return i >= 0 ? title[(i + 1)..].Trim() : title;
+    }
+
+    // ————————————————————————— 十二节拍 —————————————————————————
+
+    /// <summary>
+    /// 进这一处、正好有一拍要选：弹面板。已经做完的拍不再是 Available，所以不会重复弹。
+    /// </summary>
+    private void TryShowChoice()
+    {
+        if (_beats is null || _world is null || _choiceOpen || _box.Visible || _helpOpen) return;
+
+        var beat = _beats.PendingChoice(_world.Hub);
+        if (beat is null) return;
+
+        ShowChoice(beat);
+    }
+
+    private void ShowChoice(Beat beat)
+    {
+        _choiceBeat = beat;
+        _choiceSel = 0;
+        _choiceOpen = true;
+
+        var hasOptions = beat.Options.Length > 0;
+        _choiceHead.Text = $"{PrologueBeats.OrdinalOf(_beats?.IndexOf(beat) ?? 0)}　{beat.Name}";
+
+        for (var i = 0; i < MaxOptions; i++)
+        {
+            var label = _choiceItems[i];
+
+            if (i == 0 && !hasOptions)
+            {
+                label.Visible = true;
+                _choiceText[i] = "按 E 继续";
+            }
+            else if (i < beat.Options.Length)
+            {
+                label.Visible = true;
+                _choiceText[i] = $"{i + 1}　{beat.Options[i]}";
+            }
+            else
+            {
+                label.Visible = false;
+                _choiceText[i] = "";
+            }
+        }
+
+        _choiceFoot.Text = hasOptions
+            ? "1–4 选一项　·　Enter 确认　·　Esc 稍后再说"
+            : "E 或 Enter 确认　·　Esc 稍后再说";
+
+        // 面板高度跟着项数走：两三项时空着一大片会显得像没画完。
+        var rows = hasOptions ? beat.Options.Length : 1;
+        var footY = 50 + rows * 30 + 6;
+        _choiceFoot.Position = new Vector2(16, footY);
+        _choice.Size = new Vector2(ViewW - 208, footY + 28);
+        _choice.Position = new Vector2(104, Mathf.Clamp(220 - (footY + 28) / 2f, 84, 140));
+
+        _choice.Visible = true;
+        _tutPanel.Visible = false;
+        _hint.Visible = false;
+        _view.UiBlocking = true;
+
+        PaintChoice();
+        GD.Print($"[节拍] 弹出 {beat.Id} {beat.Name}（{beat.Options.Length} 个选项）");
+    }
+
+    /// <summary>把选中那一项点亮。每次按键都重画，别指望控件自己会跳。</summary>
+    private void PaintChoice()
+    {
+        for (var i = 0; i < MaxOptions; i++)
+        {
+            if (!_choiceItems[i].Visible) continue;
+
+            var picked = i == _choiceSel;
+            _choiceItems[i].Text = (picked ? "▸ " : "　 ") + _choiceText[i];
+            _choiceItems[i].AddThemeColorOverride("font_color", picked
+                ? new Color(0.96f, 0.82f, 0.48f, 0.98f)
+                : new Color(0.78f, 0.75f, 0.66f, 0.90f));
+        }
+    }
+
+    /// <summary>确认这一项：置 <c>beat.&lt;id&gt;.pick.&lt;i&gt;</c>，完成这一拍，日子往前走。</summary>
+    private void ConfirmChoice()
+    {
+        if (!_choiceOpen || _choiceBeat is null || _beats is null) return;
+
+        var beat = _choiceBeat;
+        var index = PrologueBeats.NormalizePick(beat, _choiceSel);
+        var picked = beat.Options.Length > 0 && index < beat.Options.Length ? beat.Options[index] : "继续";
+
+        var ok = _beats.Choose(beat, index);
+        CloseChoice(restoreTutorial: true);
+
+        if (!ok)
+        {
+            GD.PushWarning($"[节拍] {beat.Id} 选不进去（多半是状态已经变了）");
+            return;
+        }
+
+        SetHint($"「{picked}」——你记下了。", 3.5f);
+        AfterBeat(beat);
+    }
+
+    private void CloseChoice(bool restoreTutorial)
+    {
+        if (!_choiceOpen) return;
+
+        _choiceOpen = false;
+        _choiceBeat = null;
+        _choice.Visible = false;
+
+        _hint.Visible = !_box.Visible;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
+
+        if (restoreTutorial) PaintTutorial();
+    }
+
+    /// <summary>一拍做完之后：刷新那一行、落盘、补记敲门、看看有没有下一拍能弹。</summary>
+    private void AfterBeat(Beat beat)
+    {
+        GD.Print($"[节拍] 完成 {beat.Id} {beat.Name} → 第 {_beats?.Day ?? 0} 天");
+
+        UpdateChrome();
+        SaveGame();
+        SettleKnock();
+    }
+
+    /// <summary>
+    /// 门敲过了、但当时前一拍还没做完（b02 的前置是 b01 焚账）。
+    /// 玩家后来补上 b01，这一拍不该就这么丢了——这里把它接上。
+    /// </summary>
+    private void SettleKnock()
+    {
+        if (_beats is null || _world is null) return;
+
+        var late = _beats.PendingKnockLate(_world.Hub);
+        if (late is null) return;
+        if (!_beats.Complete(late)) return;
+
+        GD.Print($"[节拍] 补记 {late.Id} {late.Name} → 第 {_beats.Day} 天");
+        UpdateChrome();
+        SaveGame();
+    }
+
+    /// <summary>
+    /// 敲门这一下（<see cref="World.Knocked"/>）。文本在世界那层，这里只负责让玩家看见、
+    /// 并把 b02 记上。读档时 World.Load 也会补敲一次，那时状态机可能还没造好，所以空判。
+    /// </summary>
+    private void OnKnocked()
+    {
+        SetHint(_world.LastMessage ?? "", 4f);
+
+        var beat = _beats?.PendingKnock(_world.Hub);
+        if (beat is not null && _beats!.Complete(beat))
+        {
+            GD.Print($"[节拍] 敲门完成 {beat.Id} {beat.Name} → 第 {_beats.Day} 天");
+            UpdateChrome();
+            SaveGame();
+        }
+    }
+
+    /// <summary>搜到东西了：这一处要是有"搜到某个关键点"的拍，就记上（b08 空仓 → 仓门）。</summary>
+    private void OnSearched(string pointId)
+    {
+        if (_beats is null || _world is null) return;
+
+        var beat = _beats.PendingSearch(_world.Hub, pointId);
+        if (beat is null) return;
+        if (!_beats.Complete(beat)) return;
+
+        GD.Print($"[节拍] 搜到 {pointId} 完成 {beat.Id} {beat.Name} → 第 {_beats.Day} 天");
+        UpdateChrome();
+        SaveGame();
+    }
+
+    /// <summary>
+    /// 退化路径：这一处有一拍 search，但表里没给它指定点位——按 E 就算做完了。
+    /// 返回 true 表示这一次 E 被接住了。
+    /// </summary>
+    private bool TrySearchBeatFallback()
+    {
+        if (_beats is null || _world is null) return false;
+
+        var beat = _beats.PendingSearchFallback(_world.Hub);
+        if (beat is null) return false;
+        if (!_beats.Complete(beat)) return false;
+
+        SetHint($"{beat.Name}　——　记下了。", 3f);
+        AfterBeat(beat);
+        return true;
     }
 
     // ————————————————————————— 存档 —————————————————————————
@@ -682,6 +1002,7 @@ public partial class Main : Node2D
         if (result.State is not null)
         {
             _world.RestoreFrom(result.State);
+            _loadedState = result.State;
             GD.Print($"[存档] 读到（{result.Origin}）：{_world.Hub}（{World.TitleOf(_world.Hub)}），刻 {_world.KeUsed}/{_world.KeBudget}，旗标 {_world.Flags.GlobalCount} 条，见过 {_world.Talked.Count} 个人");
             return;
         }
@@ -702,7 +1023,13 @@ public partial class Main : Node2D
         if (_world is null) return;
         if (_saveBlocked) return;      // 版本过新的那份不许被盖
 
-        var (ok, error) = _save.TrySave(_world.ToSaveState());
+        var state = _world.ToSaveState();
+
+        // 先写旗标（World.ToSaveState 已经把 FlagStore 抄进去了），再写"第几天 + 做完哪几拍"。
+        // 反过来也不会错，但顺序写清楚，读档的人一眼能对上 S1-06 的语义表。
+        _beats?.Machine.ToState(state);
+
+        var (ok, error) = _save.TrySave(state);
         if (!ok) GD.PushWarning($"[存档] 没写成功：{error}");
     }
 
@@ -838,6 +1165,16 @@ public partial class Main : Node2D
         Style(_subtitle, 10, new Color(0.76f, 0.70f, 0.56f, 0.85f));
         ui.AddChild(_subtitle);
 
+        // 节拍那一行：画面上沿，铭牌右边。玩家抬头就知道"现在该做什么"。
+        _beatLine = new Label
+        {
+            Position = new Vector2(216, 20),
+            Size = new Vector2(ViewW - 228, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_beatLine, 11, new Color(0.93f, 0.72f, 0.44f, 0.94f));
+        ui.AddChild(_beatLine);
+
         // 新手引导条：一行，压在提示线上方；对话打开时让位
         _tutPanel = new Panel
         {
@@ -881,6 +1218,7 @@ public partial class Main : Node2D
 
         BuildTextBox(ui);
         BuildHelp(ui);
+        BuildChoice(ui);
 
         PaintTutorial();
         _help.Visible = false;
@@ -975,12 +1313,13 @@ public partial class Main : Node2D
                 "走　　W A S D ／ 方向键\n" +
                 "搜　　E 或空格：搜查 · 交谈 · 离开\n" +
                 "看　　按住 Ctrl：把这一处能碰的东西全框出来\n" +
+                "选　　1–4 挑一项，Enter（或 E）落下\n" +
                 "关　　Esc：关掉对话；什么都没开时打开这份说明\n\n" +
                 "· 黄框 ＝ 能按 E。紫框的东西，得先知道它是什么才看得见。\n" +
                 "· 出口是黄框加一根黄箭头，走过去按 E。还有没看的地方，会先拦你一次。\n" +
                 "· 刻用完了不赶你走，只是天黑之前看不完了。\n" +
-                "· 这一处要做的：把能看的地方看一遍（看不完也正常），然后从黄框出口走。\n" +
-                "· 对话打开时人物不会动，读完按 E 接着走。",
+                "· 顶上那一行写着第几天、这一处叫什么、眼下该做什么。\n" +
+                "· 有些事要做个决断，面板会自己推上来；Esc 可以先搁着，回头再问。",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         Style(body, 12, new Color(0.84f, 0.81f, 0.73f));
@@ -994,6 +1333,76 @@ public partial class Main : Node2D
         };
         Style(foot, 10, new Color(0.58f, 0.55f, 0.46f, 0.85f));
         _help.AddChild(foot);
+    }
+
+    /// <summary>
+    /// 选项面板：册子里夹着的一张批条。进某一处、正好有一拍要选的时候推上来。
+    /// 一屏最多四项（beats.csv 的 options 列现在最多四项），数字键挑、回车落。
+    /// </summary>
+    private void BuildChoice(CanvasLayer ui)
+    {
+        _choice = new Panel
+        {
+            Position = new Vector2(104, 116),
+            Size = new Vector2(ViewW - 208, 196),
+            Visible = false,
+        };
+        _choice.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.055f, 0.058f, 0.052f, 0.97f),
+            BorderColor = new Color(0.70f, 0.30f, 0.22f, 0.92f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 2,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_choice);
+
+        _choiceHead = new Label
+        {
+            Position = new Vector2(16, 10),
+            Size = new Vector2(ViewW - 240, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_choiceHead, 13, new Color(0.96f, 0.90f, 0.72f));
+        _choice.AddChild(_choiceHead);
+
+        var rule = new Label
+        {
+            Position = new Vector2(16, 32),
+            Size = new Vector2(ViewW - 240, 12),
+            Text = "—————",
+        };
+        Style(rule, 9, new Color(0.48f, 0.40f, 0.28f, 0.90f));
+        _choice.AddChild(rule);
+
+        for (var i = 0; i < MaxOptions; i++)
+        {
+            var item = new Label
+            {
+                Position = new Vector2(18, 50 + i * 30),
+                Size = new Vector2(ViewW - 250, 26),
+                Text = "",
+                Visible = false,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(item, 13, new Color(0.78f, 0.75f, 0.66f, 0.90f));
+            _choice.AddChild(item);
+            _choiceItems[i] = item;
+        }
+
+        _choiceFoot = new Label
+        {
+            Position = new Vector2(16, 172),
+            Size = new Vector2(ViewW - 240, 16),
+            Text = "1–4 选一项　·　Enter 确认　·　Esc 稍后再说",
+        };
+        Style(_choiceFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.85f));
+        _choice.AddChild(_choiceFoot);
     }
 
     private void Style(Label l, int size, Color color)
