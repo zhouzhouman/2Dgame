@@ -351,7 +351,8 @@ public partial class Main : Node2D
             }
             else
             {
-                foreach (var line in _beats.DescribeTable()) GD.Print(line);
+                // 带上玩家所在的 hub：当前那一拍在别处时，表里补一句该往哪走。
+                foreach (var line in _beats.DescribeTable(_world?.Hub)) GD.Print(line);
             }
 
             _quitAfterFrame = true;

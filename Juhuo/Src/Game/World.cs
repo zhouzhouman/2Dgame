@@ -223,21 +223,13 @@ public sealed class World
     private readonly List<string> _deadVillagers = new();
 
     /// <summary>
-    /// 七个空间的标题。
+    /// 七个空间的标题。**名字只有一份**，在 <see cref="HubNames"/>——HUD 那一行与
+    /// <c>--beats</c> 也要说"城南小院"，而那一层在 Godot 外面。这里只转手，不再抄第二张表。
     ///
     /// 刻预算不在这里 —— 预算只有 Core 的 ClockTable 一份，
     /// 数值源是 rule_time_clock.md §2。这里再抄一遍就是第二套真相。
     /// </summary>
-    private static readonly Dictionary<string, string> HubTitles = new()
-    {
-        ["hub1"] = "城南小院",
-        ["hub2"] = "逃亡路 · 废驿",
-        ["hub3"] = "白幡村",
-        ["hub4"] = "县城",
-        ["hub5"] = "山神庙",
-        ["hub6"] = "官仓 · 破庙",
-        ["hub7"] = "城下营地",
-    };
+    private static IReadOnlyDictionary<string, string> HubTitles => HubNames.ByHub;
 
     private static readonly string[] HubOrder =
         { "hub1", "hub2", "hub3", "hub4", "hub5", "hub6", "hub7" };

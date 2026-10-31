@@ -262,6 +262,25 @@ public class GameBeatsTests
     }
 
     [Fact]
+    public void HUD当前拍在别处_末尾补一句该往哪走()
+    {
+        // 玩家站在城下营地（hub7），该做的是 hub1 的焚账——不说去哪，他就得自己把七个空间走一遍。
+        var beats = Fresh(out _, out _);
+
+        Assert.Equal("第 1 天 · 城下营地 · 该做：① 焚账（城南小院）", beats.HudLine("城下营地"));
+    }
+
+    [Fact]
+    public void HUD当前拍就在脚下_不加括号()
+    {
+        var beats = Fresh(out _, out _);
+
+        // 已经在城南小院：保持原来的三段式，不在旁边还指路。
+        Assert.Equal("第 1 天 · 城南小院 · 该做：① 焚账", beats.HudLine("城南小院"));
+        Assert.DoesNotContain("（", beats.HudLine("城南小院"));
+    }
+
+    [Fact]
     public void HUD全做完说完成_没得做说等一等()
     {
         var done = Fresh(out _, out _);

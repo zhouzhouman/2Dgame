@@ -253,6 +253,7 @@ public sealed class PrologueBeats
     /// <summary>
     /// HUD 那一行：
     /// <c>第 3 天 · 废驿 · 该做：③ 第一口锅</c>；
+    /// 这一拍不在你脚下时补一句该去哪：<c>第 1 天 · 城下营地 · 该做：① 焚账（城南小院）</c>；
     /// 全做完写 <c>第 30 天 · 序章已完成</c>；当前没有可做的写 <c>第 N 天 · 等一等</c>。
     /// </summary>
     /// <param name="hubLabel">当前空间的短名（"废驿"）；空串时这一段省掉。</param>
@@ -265,14 +266,32 @@ public sealed class PrologueBeats
         if (current is null) return $"第 {Day} 天 · 等一等";
 
         var where = string.IsNullOrEmpty(hubLabel) ? "" : $" · {hubLabel}";
-        return $"第 {Day} 天{where} · 该做：{OrdinalOf(IndexOf(current))} {current.Name}";
+        return $"第 {Day} 天{where} · 该做：{OrdinalOf(IndexOf(current))} {current.Name}"
+             + DestinationOf(current, hubLabel);
     }
 
     /// <summary>
-    /// <c>--beats</c> 那张表：第一行说总数与完成数，后面每一拍一行，当前那一拍标 ← 当前。
+    /// 这一拍不在你站的地方时，括号里补一句该往哪走。同地、或者不知道自己在哪，就什么都不补——
+    /// 玩家就在旁边还被指路，比不指路更烦。
     /// </summary>
+    /// <param name="beat">当前这一拍。</param>
+    /// <param name="hubLabel">当前空间的短名（HUD 传进来的就是本空间的短名）。</param>
+    /// <returns><c>（城南小院）</c> 或空串。</returns>
+    private static string DestinationOf(Beat beat, string? hubLabel)
+    {
+        if (string.IsNullOrEmpty(hubLabel)) return "";
+
+        var dest = HubNames.ShortOf(beat.Hub);
+        return string.Equals(dest, hubLabel, StringComparison.Ordinal) ? "" : $"（{dest}）";
+    }
+
+    /// <summary>
+    /// <c>--beats</c> 那张表：第一行说总数与完成数，后面每一拍一行，当前那一拍标 ← 当前；
+    /// 当前这一拍不在 <paramref name="hereHub"/> 时，后面再补一句该往哪走（<c>→ 城南小院</c>）。
+    /// </summary>
+    /// <param name="hereHub">玩家现在所在的 hub id；不传就只标 ← 当前（测试与纯表视图用）。</param>
     /// <returns>按打印顺序排好的行。</returns>
-    public IReadOnlyList<string> DescribeTable()
+    public IReadOnlyList<string> DescribeTable(string? hereHub = null)
     {
         var currentId = _machine.Current?.Id;
         var lines = new List<string>(_table.Count + 1)
@@ -284,8 +303,13 @@ public sealed class PrologueBeats
         {
             var beat = _table.All[i];
             var state = _machine.StateOf(beat);
-            var mark = string.Equals(beat.Id, currentId, StringComparison.Ordinal) ? " ← 当前" : "";
-            lines.Add($"[节拍] {i + 1} {beat.Id} {beat.Name} 第{beat.Day}天 {beat.Hub} {StateText(state)}{mark}");
+            var isCurrent = string.Equals(beat.Id, currentId, StringComparison.Ordinal);
+            var mark = isCurrent ? " ← 当前" : "";
+            var away = isCurrent && !string.IsNullOrEmpty(hereHub)
+                       && !string.Equals(hereHub, beat.Hub, StringComparison.Ordinal)
+                ? $" → {HubNames.ShortOf(beat.Hub)}"
+                : "";
+            lines.Add($"[节拍] {i + 1} {beat.Id} {beat.Name} 第{beat.Day}天 {beat.Hub} {StateText(state)}{mark}{away}");
         }
 
         return lines;
@@ -309,5 +333,46 @@ public sealed class PrologueBeats
     {
         if (index >= 1 && index <= Circled.Length) return Circled[index - 1].ToString();
         return index > 0 ? index.ToString() : "·";
+    }
+}
+
+/// <summary>
+/// 七个空间的名字。**只有这一份**：Godot 那边的 <c>World.TitleOf</c> 直接转手到这里。
+///
+/// 为什么在这一层：HUD 那一行要说出"该去城南小院"，而 <c>--beats</c> 在 Godot 外面跑也要说得出——
+/// Game 引用 Application 而不是反过来，名字放在 Game 里这一层就看不见了。
+/// 再抄一张表就是第二份真相（rule 里那条老账）。
+/// </summary>
+public static class HubNames
+{
+    private static readonly Dictionary<string, string> Titles = new(StringComparer.Ordinal)
+    {
+        ["hub1"] = "城南小院",
+        ["hub2"] = "逃亡路 · 废驿",
+        ["hub3"] = "白幡村",
+        ["hub4"] = "县城",
+        ["hub5"] = "山神庙",
+        ["hub6"] = "官仓 · 破庙",
+        ["hub7"] = "城下营地",
+    };
+
+    /// <summary>hub id → 完整标题；给 <c>World</c> 转手用。</summary>
+    public static IReadOnlyDictionary<string, string> ByHub => Titles;
+
+    /// <summary>完整标题；不认识的 id 原样返回。</summary>
+    /// <param name="hub">hub id。</param>
+    /// <returns>标题。</returns>
+    public static string Of(string hub) => Titles.TryGetValue(hub, out var v) ? v : hub;
+
+    /// <summary>
+    /// 短名：HUD 那一行放不下"逃亡路 · 废驿"，只留后半截。**只做截取，不再抄一张表。**
+    /// </summary>
+    /// <param name="hub">hub id。</param>
+    /// <returns>短名（"废驿"）；不认识的 id 原样返回。</returns>
+    public static string ShortOf(string hub)
+    {
+        var title = Of(hub);
+        var i = title.LastIndexOf('·');
+        return i >= 0 ? title[(i + 1)..].Trim() : title;
     }
 }
