@@ -22,6 +22,7 @@
     E09 两份 points CSV 不一致（生成器产出的文档 CSV vs 游戏读的 Content/data/points.csv）
     E10 beats.csv 结构错（行数 / id / day / hub / requires / sets 旗标名 / trigger）
     E11 items.csv / gifts.csv 表结构、loot 覆盖、引用与旗标名
+    E12 trust.csv / routes.csv 表结构、id、三轴取值（−10..10 整数）、路线轴与阈值、三轴全 0
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -44,6 +45,14 @@
     * E11 的赠礼表按"给他看"读：npc 必须是 npcs.csv 里有的名字（该表没有 id 列，
       名字是唯一的键）、item 必须在 items.csv 里、requires 按同一套旗标文法判、
       sets 为空允许（有些反应不留痕）。
+    * E12 的三轴是「这一次动作对 官望 / 民望 / 疑心 的增减」，不是绝对值：
+      0–100 是轴本身的范围（设计文档 §4.3），表里存的是单次变化量。
+      故 guan/min/yi 限 −10..10 的整数——超过 10 的单次变化在序章里不存在，
+      写大了多半是把轴值当变化量填了。
+    * E12 不许三轴全 0：那一行等于没写，事件挂上去什么也不会发生。
+      这是"数据必须有后果"的底线，CANON §2 第 12 条。
+    * E12 的 routes.axis 只认 guan / min：疑心不是攻城路线，写进来就是设计错。
+      阈值 1..100 与 0–100 的轴同量纲。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -79,6 +88,14 @@ ITEM_COLS = ["id", "name", "kind", "stack", "note"]
 GIFT_COLS = ["npc", "item", "requires", "sets", "note"]
 ITEM_KINDS = ("food", "tool", "token", "paper")     # 食物 / 器物 / 凭证 / 纸
 STACK_VALUES = ("0", "1")                          # 0 不可叠 / 1 可叠
+
+# E12：两条信任轴 + 疑心，按地区各一条（序章只有县城一带，先按一条算）
+TRUST_COLS = ["id", "label", "guan", "min", "yi", "note"]
+ROUTE_COLS = ["id", "label", "axis", "threshold", "note"]
+TRUST_AXES = ("guan", "min", "yi")
+TRUST_DELTA_MIN, TRUST_DELTA_MAX = -10, 10        # 单次变化量的上下限
+ROUTE_AXES = ("guan", "min")                      # 内应开门 / 民变开城，疑心不是路线
+TRUST_ID = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
 # 文档/校对用的那一份（生成器写；与游戏读的那份同源）
 DOC_CSV = os.path.join(ROOT, "举火_序章数据_全关卡_v1.1.csv")
@@ -530,11 +547,100 @@ def check_items_gifts(items_path, gifts_path, points, npcs, notes, note_detail):
     return errors
 
 
+def check_trust_routes(trust_path, routes_path):
+    """E12：三轴增减表与攻城路线表。两张都是手维护表，与文档 CSV 无关。"""
+    errors = []
+
+    trust_rows = []
+    if not os.path.isfile(trust_path):
+        errors.append(Err("E12", "-", "trust.csv", "-",
+                          "找不到 trust.csv（事件的三轴增减就没处查了）"))
+    else:
+        missing, trust_rows = read_table(trust_path, TRUST_COLS)
+        if missing:
+            errors.append(Err("E12", "-", "trust.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+            trust_rows = []
+        elif not trust_rows:
+            errors.append(Err("E12", "-", "trust.csv", "-", "一行都没有（序章的信任轴是空的）"))
+
+    seen = Counter()
+    for n, r in enumerate(trust_rows, start=2):      # 行号按文件行算（表头是第 1 行）
+        tid = (r.get("id") or "").strip()
+        where = "第 %d 行" % n
+        seen[tid] += 1
+
+        if not TRUST_ID.match(tid):
+            errors.append(Err("E12", "trust.csv", tid or where, "-",
+                              "id 应是小写英文+下划线（如 bribe / sell_grain_cheap），"
+                              "实际 %r" % tid))
+
+        deltas = {}
+        for axis in TRUST_AXES:
+            val, why = parse_coord(r.get(axis))
+            deltas[axis] = val
+            if why:
+                errors.append(Err("E12", "trust.csv", tid or where, "-",
+                                  "%s %s（三轴只收整数）" % (axis, why)))
+            elif not TRUST_DELTA_MIN <= val <= TRUST_DELTA_MAX:
+                errors.append(Err("E12", "trust.csv", tid or where, "-",
+                                  "%s=%d 应在 %d..%d（这是单次变化量，不是轴值）"
+                                  % (axis, val, TRUST_DELTA_MIN, TRUST_DELTA_MAX)))
+
+        if None not in deltas.values() and not any(deltas.values()):
+            errors.append(Err("E12", "trust.csv", tid or where, "-",
+                              "guan/min/yi 三轴全 0，这一行等于没写"))
+
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E12", "trust.csv", tid or where, "-",
+                              "note 为空（每个数都要能指回文档哪一节）"))
+
+    for tid, cnt in sorted(seen.items()):
+        if tid and cnt > 1:
+            errors.append(Err("E12", "trust.csv", tid, "-", "id 重复（共 %d 条）" % cnt))
+
+    route_rows = []
+    if not os.path.isfile(routes_path):
+        errors.append(Err("E12", "-", "routes.csv", "-",
+                          "找不到 routes.csv（攻城路线就没处查门槛了）"))
+    else:
+        missing, route_rows = read_table(routes_path, ROUTE_COLS)
+        if missing:
+            errors.append(Err("E12", "-", "routes.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+            route_rows = []
+
+    seen = Counter()
+    for n, r in enumerate(route_rows, start=2):
+        rid = (r.get("id") or "").strip()
+        axis = (r.get("axis") or "").strip()
+        where = "第 %d 行" % n
+        seen[rid] += 1
+
+        if not rid:
+            errors.append(Err("E12", "routes.csv", where, "-", "id 为空"))
+        if axis not in ROUTE_AXES:
+            errors.append(Err("E12", "routes.csv", rid or where, "-",
+                              "axis=%r 只能是 %s（疑心不是攻城路线）"
+                              % (axis, " / ".join(ROUTE_AXES))))
+
+        th, why = parse_coord(r.get("threshold"))
+        if why:
+            errors.append(Err("E12", "routes.csv", rid or where, "-", "threshold %s" % why))
+        elif not 1 <= th <= 100:
+            errors.append(Err("E12", "routes.csv", rid or where, "-",
+                              "threshold=%d 应在 1..100" % th))
+
+    for rid, cnt in sorted(seen.items()):
+        if rid and cnt > 1:
+            errors.append(Err("E12", "routes.csv", rid, "-", "id 重复（共 %d 条）" % cnt))
+
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
     doc_csv / beats_path 传 None = 这次不查（selftest 用的是临时数据，比不了真实的文档 CSV）。
-    items.csv / gifts.csv 始终查：它们是手维护表，与文档 CSV 无关。
+    items.csv / gifts.csv / trust.csv / routes.csv 始终查：它们是手维护表，与文档 CSV 无关。
     """
     errors = []
     notes = Counter()
@@ -711,12 +817,17 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
                                     os.path.join(data_dir, "gifts.csv"),
                                     points, npcs, notes, note_detail))
 
+    # —— E12 信任轴 / 攻城路线 ——
+    errors.extend(check_trust_routes(os.path.join(data_dir, "trust.csv"),
+                                     os.path.join(data_dir, "routes.csv")))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
-    print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + 两份 points 同源")
+    print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
+          "信任轴/路线 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -807,6 +918,29 @@ def _selftest_e11(tmp):
     return loot_hit and item_hit and gift_hit
 
 
+def _selftest_e12(tmp):
+    """E12 自测：routes.axis 写成 yi + trust 里一行三轴全 0，两处都必须报出。"""
+    _, trust = read_table(os.path.join(DEFAULT_DATA, "trust.csv"), TRUST_COLS)
+    _, routes = read_table(os.path.join(DEFAULT_DATA, "routes.csv"), ROUTE_COLS)
+
+    bad_trust = [dict(r) for r in trust]
+    bad_trust.append({"id": "ghost_act", "label": "坏样本",
+                      "guan": "0", "min": "0", "yi": "0", "note": "坏样本：三轴全 0"})
+    bad_routes = [dict(r) for r in routes]
+    bad_routes.append({"id": "ghost_route", "label": "坏样本", "axis": "yi",
+                       "threshold": "60", "note": "坏样本：axis 写了疑心"})
+
+    d = os.path.join(tmp, "e12")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "trust.csv"), TRUST_COLS, bad_trust)
+    _write_csv(os.path.join(d, "routes.csv"), ROUTE_COLS, bad_routes)
+    msgs = [e.msg for e in check_trust_routes(os.path.join(d, "trust.csv"),
+                                             os.path.join(d, "routes.csv"))]
+    zero_hit = any("三轴全 0" in m for m in msgs)
+    axis_hit = any("axis=" in m for m in msgs)
+    return zero_hit and axis_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -838,8 +972,9 @@ def selftest():
 
         _write_csv(os.path.join(data_dir, "points.csv"), POINT_COLS, points)
         _write_csv(os.path.join(data_dir, "npcs.csv"), NPC_COLS, npcs)
-        # E11 的两张表照抄真表：这一轮只验 E01–E05，别让物品/赠礼的红点混进来
-        for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS)):
+        # E11 / E12 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
+        for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS),
+                           ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -863,6 +998,10 @@ def selftest():
             print("[selftest] 物品/赠礼 E11 未报出")
             return 1
         print("[selftest] 物品/赠礼 E11 1/1")
+        if not _selftest_e12(tmp):
+            print("[selftest] 信任轴/路线 E12 未报出")
+            return 1
+        print("[selftest] 信任轴/路线 E12 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -876,7 +1015,8 @@ def main(argv=None):
         pass
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
-    ap.add_argument("--selftest", action="store_true", help="造 5 个错样本，验证五类都能报出")
+    ap.add_argument("--selftest", action="store_true",
+                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")
