@@ -67,10 +67,11 @@ public class BeatMachineTests
         Assert.Equal("hub7", table.All[11].Hub);
         Assert.Equal(30, table.All[11].Day);
 
-        // 每拍至少置一个旗标，且置的是"这一拍做完了"（前缀归数据表定，这里不写死）。
+        // 每拍至少置一个旗标，且第一项是"这一拍做完了"（前缀归数据表定，这里不写死）。
+        // 一拍可以有第二项：b08 空仓顺带置 city_hungry，让攻城「围」真的可选。
         Assert.All(table.All, b =>
         {
-            Assert.Single(b.Sets);
+            Assert.NotEmpty(b.Sets);
             Assert.EndsWith(b.Id + ".done", b.Sets[0]);
         });
     }
@@ -292,7 +293,9 @@ public class BeatMachineTests
 
         Assert.Null(m.Current);
         Assert.Equal(12, m.DoneCount);
-        Assert.Equal(12, flags.GlobalCount);
+        // 旗标数 ≥ 拍数：每拍至少置一个"做完了"，有的拍还会顺带置状态（b08 → city_hungry）
+        Assert.True(flags.GlobalCount >= 12,
+            $"十二拍做完只剩 {flags.GlobalCount} 个旗标，比拍数还少");
         Assert.Equal(30, day);
     }
 

@@ -119,7 +119,10 @@ if [ "$FAST" = "0" ]; then
     # 必须 12/12 且 exit 0；只看其中一句会被"可以通关"骗过（当年可达性就吃过一次假绿）
     [ "$rc" -eq 0 ] || return 1
     echo "$out" | grep -qE "合计：12/12 拍" || return 1
-    echo "$out" | grep -q "结论：可以通关"
+    echo "$out" | grep -q "结论：可以通关" || return 1
+    # 「能走到第 12 拍」不等于「打得赢」：攻城必输时上面两条一样是绿的（实测踩过）。
+    # 行军路线选第 0 项＝围，60 兵对 48 的门槛，必须真破城。
+    echo "$out" | grep -q "城开了"
   }
   step "序章自动通关（十二拍走完）" playthrough || true
 

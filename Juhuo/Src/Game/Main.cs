@@ -166,6 +166,31 @@ public partial class Main : Node2D
     /// <summary>这一局是 <c>--shop</c> 自检（同样不碰玩家那份档）。</summary>
     private bool _shopRun;
 
+    // —— 招兵与攻城（S2-03c）——
+    /// <summary>攻城四法（siege.csv）。</summary>
+    private SiegeTable _siegeTable = default!;
+
+    /// <summary>招兵三档（recruit.csv）。</summary>
+    private RecruitTable _recruitTable = default!;
+
+    /// <summary>四法的规则层。</summary>
+    private SiegeBook? _siegeBook;
+
+    /// <summary>攻城那一拍弹出来的面板；别的拍为 null。</summary>
+    private SiegeScreen? _siegeScreen;
+
+    /// <summary>
+    /// 手里多少兵。**只在这里存一份**，落盘时写进 <c>prologue.troops</c>；
+    /// 招兵加、攻城扣，都改这个字段。
+    /// </summary>
+    private int _troops;
+
+    /// <summary>这一局是 <c>--siege</c> 自检（同样不碰玩家那份档）。</summary>
+    private bool _siegeRun;
+
+    /// <summary>信任面板底部那一行：<c>兵力 60</c>。</summary>
+    private Label _trustTroops = default!;
+
     /// <summary>提示停留多久之后开始淡出（秒）。</summary>
     private const float ToastHold = 2f;
 
@@ -181,6 +206,9 @@ public partial class Main : Node2D
     private Panel _choice = default!;
     private Label _choiceHead = default!;
     private readonly Label[] _choiceItems = new Label[MaxOptions];
+
+    /// <summary>每行右边那半句（攻城才用：门槛缺什么 / 兵不够要撤）；其余拍收起来不占地方。</summary>
+    private readonly Label[] _choiceNotes = new Label[MaxOptions];
     private readonly string[] _choiceText = new string[MaxOptions];
     private Label _choiceFoot = default!;
     private Beat? _choiceBeat;
@@ -225,6 +253,10 @@ public partial class Main : Node2D
         _shopRun = args.Contains("--shop");
         if (_shopRun) _saveBlocked = true;
 
+        // --siege 只算自己造的那份账：撤退不置旗标、招兵不加玩家的兵。
+        _siegeRun = args.Contains("--siege");
+        if (_siegeRun) _saveBlocked = true;
+
         LoadProgress();
         BuildUi();
 
@@ -256,6 +288,10 @@ public partial class Main : Node2D
             // 货架（S2-02c）：价钱与存货在表里，买卖规则在 TradeBook，面板在 Application
             _shopTable = ShopTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/shops.csv"));
 
+            // 招兵与攻城（S2-03c）：四法与三档都在表里，判定在 Core，面板在 Application
+            _siegeTable = SiegeTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/siege.csv"));
+            _recruitTable = RecruitTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/recruit.csv"));
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
@@ -266,7 +302,7 @@ public partial class Main : Node2D
             // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
-            else if (!_shopRun) LoadSave();
+            else if (!_shopRun && !_siegeRun) LoadSave();
 
             // 三轴只在存档里存一份：这里拿到的就是 SaveState.Trust["prologue"] 那个对象，
             // 账本就地改它，SaveGame 再原样交回去。没有条目时用存档默认值，不自己设初值。
@@ -279,6 +315,11 @@ public partial class Main : Node2D
             _trade = new TradeBook(
                 _shopTable, _world.Bag, _items, _trustBook.State,
                 name => _world.Flags.Has(name, _world.Hub));
+
+            // 攻城（S2-03c）：四法只算账；兵力从存档的 prologue.troops 拾起来（v3 及更早是 0）。
+            _siegeBook = new SiegeBook(_siegeTable);
+            _troops = _loadedState?.Prologue.Troops ?? 0;
+            GD.Print($"[攻城] 四法 {_siegeBook.Count} 条，兵力 {_troops}");
 
             // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
             // （S1-06 交接单的第二个坑：顺序写反，十二拍一起变 Locked）。
@@ -299,7 +340,16 @@ public partial class Main : Node2D
 
                 _saveBlocked = true;                 // 只改这一次运行，别把玩家那份档盖了
                 for (var i = 0; i < skip && i < _beatTable.Count; i++)
-                    _beats.Complete(_beatTable.All[i]);
+                {
+                    var skipped = _beatTable.All[i];
+                    _beats.Complete(skipped);
+
+                    // 招兵那一拍被"跳"过去时，兵也得照第 0 档加上去：
+                    // 不然 --beatskip=10 跳到攻城会看见 0 兵，截图与手测都对不上。
+                    if (_recruitTable is not null
+                        && string.Equals(skipped.Id, SiegeWiring.RecruitBeat, StringComparison.Ordinal))
+                        RecruitWiring.Apply(_recruitTable, 0, ref _troops, id => ApplyTrust(id));
+                }
 
                 GD.Print($"[节拍·跳] 做到第 {skip} 拍 → 第 {_beats.Day} 天，当前 {_beats.Current?.Id ?? "无"}");
             }
@@ -481,6 +531,23 @@ public partial class Main : Node2D
             else
             {
                 GD.Print($"{ShopReport.Prefix} 初始化没完成（shops.csv / items.csv / trust.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
+        // 开发辅助：--siege 兵力 60 选不了 / 打要撤 / 兵力 80 打得下，三行说完，然后退出（S2-03c）
+        if (_siegeRun)
+        {
+            if (_siegeTable is not null && _trustTable is not null && _routeTable is not null)
+            {
+                foreach (var line in SiegeDemo.Run(_siegeTable, _trustTable, _routeTable))
+                    GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{SiegeReport.Prefix} 初始化没完成（siege.csv / trust.csv / routes.csv 读不进来），跑不了");
                 _exitCode = 1;
             }
 
@@ -1428,6 +1495,8 @@ public partial class Main : Node2D
                 ? new Color(0.88f, 0.79f, 0.52f, 0.96f)
                 : new Color(0.66f, 0.63f, 0.55f, 0.82f));
         }
+
+        _trustTroops.Text = SiegeWiring.TroopLine(_troops);
     }
 
     // ————————————————————————— 买卖 —————————————————————————
@@ -1646,12 +1715,28 @@ public partial class Main : Node2D
         _choiceSel = 0;
         _choiceOpen = true;
 
+        // 攻城那一拍不念 beats.csv 的四个字，念四法的真账：耗时、伤亡、用不用得上。
+        _siegeScreen = BuildSiegeScreen(beat);
+
+        if (_siegeScreen is not null)
+        {
+            ShowSiegeRows(beat);
+            PaintChoice();
+            _choice.Visible = true;
+            _tutPanel.Visible = false;
+            _hint.Visible = false;
+            _view.UiBlocking = true;
+            GD.Print($"[攻城] 弹出四法面板（兵力 {_troops}）");
+            return;
+        }
+
         var hasOptions = beat.Options.Length > 0;
         _choiceHead.Text = $"{PrologueBeats.OrdinalOf(_beats?.IndexOf(beat) ?? 0)}　{beat.Name}";
 
         for (var i = 0; i < MaxOptions; i++)
         {
             var label = _choiceItems[i];
+            _choiceNotes[i].Visible = false;
 
             if (i == 0 && !hasOptions)
             {
@@ -1677,10 +1762,7 @@ public partial class Main : Node2D
 
         // 面板高度跟着项数走：两三项时空着一大片会显得像没画完。
         var rows = hasOptions ? beat.Options.Length : 1;
-        var footY = 50 + rows * 30 + 6;
-        _choiceFoot.Position = new Vector2(16, footY);
-        _choice.Size = new Vector2(ViewW - 208, footY + 28);
-        _choice.Position = new Vector2(104, Mathf.Clamp(220 - (footY + 28) / 2f, 84, 140));
+        ResizeChoice(rows);
 
         _choice.Visible = true;
         _tutPanel.Visible = false;
@@ -1692,13 +1774,70 @@ public partial class Main : Node2D
     }
 
     /// <summary>
+    /// 攻城那一拍要一张 <see cref="SiegeScreen"/>；别的拍、或者四法读不进来时为 null。
+    /// 旗标探针按**当前所在的 hub** 问——<c>city_hungry</c> 这类门是随场景走的。
+    /// </summary>
+    private SiegeScreen? BuildSiegeScreen(Beat beat)
+    {
+        if (_siegeBook is null || _trustBook is null || _world is null) return null;
+        if (!string.Equals(beat.Id, SiegeWiring.SiegeBeat, StringComparison.Ordinal)) return null;
+
+        return new SiegeScreen(
+            _siegeBook, _trustBook, _troops,
+            name => _world.Flags.Has(name, _world.Hub),
+            _world.Flags);
+    }
+
+    /// <summary>把四法摊成四行：左边名字 + 耗时 + 伤亡，右边门槛 / 兵不够的那句。</summary>
+    private void ShowSiegeRows(Beat beat)
+    {
+        if (_siegeScreen is null) return;
+
+        _choiceHead.Text = SiegeWiring.SiegeHead(
+            PrologueBeats.OrdinalOf(_beats?.IndexOf(beat) ?? 0), beat.Name, _troops);
+
+        var rows = _siegeScreen.Rows();
+        for (var i = 0; i < MaxOptions; i++)
+        {
+            var label = _choiceItems[i];
+            var usable = i < rows.Count;
+
+            label.Visible = usable;
+            _choiceText[i] = usable ? $"{i + 1}　{rows[i].Label}" : "";
+
+            _choiceNotes[i].Visible = usable && rows[i].Note.Length > 0;
+            _choiceNotes[i].Text = usable ? rows[i].Note : "";
+        }
+
+        _choiceFootDefault = SiegeScreen.FootLine;
+        _choiceFoot.Text = _choiceFootDefault;
+        ResizeChoice(rows.Count);
+    }
+
+    /// <summary>面板高度跟着行数走。</summary>
+    private void ResizeChoice(int rows)
+    {
+        var footY = 50 + Math.Max(1, rows) * 30 + 6;
+        _choiceFoot.Position = new Vector2(16, footY);
+        _choice.Size = new Vector2(ViewW - 208, footY + 28);
+        _choice.Position = new Vector2(104, Mathf.Clamp(220 - (footY + 28) / 2f, 84, 140));
+    }
+
+    /// <summary>
     /// 把选中那一项点亮。每次按键都重画，别指望控件自己会跳。
     ///
-    /// 攻城那一拍里，「间」要官望够才走得通（design §8.6：间 = 内应）；
-    /// 走不通的项灰着，选中时底下那行直接说为什么——玩家不该按了回车才知道白按。
+    /// 攻城那一拍里，「间」要官望够才走得通（design §8.6：间 = 内应），
+    /// 其余三法各有各的门槛（断粮 / 地形）；走不通的项灰着，右边直接说缺什么——
+    /// 玩家不该按了回车才知道白按。兵不够打赢的也先告诉他"多半要撤"，再让他自己决定。
     /// </summary>
     private void PaintChoice()
     {
+        if (_siegeScreen is not null)
+        {
+            PaintSiegeChoice();
+            return;
+        }
+
         for (var i = 0; i < MaxOptions; i++)
         {
             if (!_choiceItems[i].Visible) continue;
@@ -1706,6 +1845,7 @@ public partial class Main : Node2D
             var picked = i == _choiceSel;
             var locked = TrustChoice.Locked(_trustBook, _choiceBeat, i);
 
+            _choiceNotes[i].Visible = false;
             _choiceItems[i].Text = (picked ? "▸ " : "　 ") + _choiceText[i];
             _choiceItems[i].AddThemeColorOverride("font_color", locked
                 ? new Color(0.46f, 0.44f, 0.40f, 0.58f)
@@ -1717,6 +1857,36 @@ public partial class Main : Node2D
         _choiceFoot.Text = TrustChoice.RefusalFor(_trustBook, _choiceBeat, _choiceSel) ?? _choiceFootDefault;
     }
 
+    /// <summary>攻城面板的重画：三档颜色——点不动（灰）、要撤（褐）、正常；选中永远是金的那一层。</summary>
+    private void PaintSiegeChoice()
+    {
+        var screen = _siegeScreen!;
+        var rows = screen.Rows();
+
+        for (var i = 0; i < _choiceItems.Length && i < rows.Count; i++)
+        {
+            var row = rows[i];
+            var picked = i == _choiceSel;
+
+            _choiceItems[i].Text = (picked ? "▸ " : "　 ") + _choiceText[i];
+            _choiceItems[i].AddThemeColorOverride("font_color",
+                !row.Usable ? new Color(0.46f, 0.44f, 0.40f, 0.58f)
+                : picked ? new Color(0.96f, 0.82f, 0.48f, 0.98f)
+                : row.WillRetreat ? new Color(0.86f, 0.64f, 0.36f, 0.94f)
+                : new Color(0.78f, 0.75f, 0.66f, 0.90f));
+
+            _choiceNotes[i].Text = row.Note;
+            _choiceNotes[i].Visible = row.Note.Length > 0;
+            _choiceNotes[i].AddThemeColorOverride("font_color",
+                !row.Usable ? new Color(0.52f, 0.50f, 0.45f, 0.78f)
+                : new Color(0.88f, 0.66f, 0.34f, 0.94f));
+        }
+
+        _choiceFoot.Text = _choiceSel >= 0 && _choiceSel < rows.Count && !rows[_choiceSel].Usable
+            ? $"这一法用不上：{rows[_choiceSel].Note}"
+            : SiegeScreen.FootLine;
+    }
+
     /// <summary>确认这一项：置 <c>beat.&lt;id&gt;.pick.&lt;i&gt;</c>，完成这一拍，日子往前走。</summary>
     private void ConfirmChoice()
     {
@@ -1724,6 +1894,13 @@ public partial class Main : Node2D
 
         var beat = _choiceBeat;
         var index = PrologueBeats.NormalizePick(beat, _choiceSel);
+
+        // 攻城：四法各有门槛，打不打、剩多少兵都由 SiegeScreen 落账（S2-03c）。
+        if (_siegeScreen is not null && string.Equals(beat.Id, SiegeWiring.SiegeBeat, StringComparison.Ordinal))
+        {
+            ConfirmSiege(beat, index);
+            return;
+        }
 
         // 攻城选「间」：内应门没开就走不通。面板不关，让他换个法子——
         // 这一下要是被吞掉又不说话，玩家会以为按键失灵。
@@ -1746,7 +1923,56 @@ public partial class Main : Node2D
             return;
         }
 
-        SetHint($"「{picked}」——你记下了。", 3.5f);
+        var line = $"「{picked}」——你记下了。";
+
+        // 招兵（b07）：选哪一档就加多少兵；给粮那档还要借「施粥」动三轴（§18.5 场景 7）。
+        if (_recruitTable is not null && string.Equals(beat.Id, SiegeWiring.RecruitBeat, StringComparison.Ordinal))
+        {
+            var recruit = RecruitWiring.Apply(_recruitTable, index, ref _troops, id => ApplyTrust(id));
+            if (recruit.Length > 0)
+            {
+                GD.Print($"[招兵] 第 {index + 1} 档：{recruit}");
+                line = recruit;
+            }
+        }
+
+        SetHint(line, 3.5f);
+        AfterBeat(beat);
+    }
+
+    /// <summary>
+    /// 攻城这一下：先结算，成了才记这一拍。门槛没过的面板不关——把原因留在底下那行。
+    /// </summary>
+    private void ConfirmSiege(Beat beat, int index)
+    {
+        if (_siegeScreen is null || _beats is null) return;
+        if (!_beats.Machine.CanTrigger(beat)) return;
+
+        var screen = _siegeScreen;
+        var result = screen.Confirm(index);
+
+        if (!result.Ok)
+        {
+            GD.Print($"[攻城] 第 {index + 1} 法用不上：{result.Reason}");
+            _choiceFoot.Text = screen.Message;
+            return;
+        }
+
+        // 结算之后剩下的兵要接回主账：Main 只存 _troops 这一份，面板算完就地交回来。
+        _troops = screen.Troops;
+
+        // 赢也好、撤也好，这一拍都算做完（§16.5：输不是结束）——之后照常进 b12。
+        var ok = _beats.Choose(beat, index);
+        CloseChoice(restoreTutorial: true);
+
+        if (!ok)
+        {
+            GD.PushWarning($"[节拍] {beat.Id} 选不进去（多半是状态已经变了）");
+            return;
+        }
+
+        GD.Print($"[攻城] {screen.Message}（余兵 {_troops}，城破={result.Win}）");
+        SetHint(screen.Message, 4f);
         AfterBeat(beat);
     }
 
@@ -1756,6 +1982,7 @@ public partial class Main : Node2D
 
         _choiceOpen = false;
         _choiceBeat = null;
+        _siegeScreen = null;
         _choice.Visible = false;
 
         _hint.Visible = !_box.Visible;
@@ -1893,6 +2120,9 @@ public partial class Main : Node2D
         // 先写旗标（World.ToSaveState 已经把 FlagStore 抄进去了），再写"第几天 + 做完哪几拍"。
         // 反过来也不会错，但顺序写清楚，读档的人一眼能对上 S1-06 的语义表。
         _beats?.Machine.ToState(state);
+
+        // 兵力跟在节拍进度后面：招兵加的、攻城扣的都在 _troops 这一份里（schema v4 的 prologue.troops）。
+        state.Prologue.Troops = _troops;
 
         // 三条轴写回现有的 Trust["prologue"]：形状不变、不加字段。
         if (_trustBook is not null) TrustWiring.Store(state, _trustBook);
@@ -2305,9 +2535,11 @@ public partial class Main : Node2D
 
         for (var i = 0; i < MaxOptions; i++)
         {
+            var y = 50 + i * 30;
+
             var item = new Label
             {
-                Position = new Vector2(18, 50 + i * 30),
+                Position = new Vector2(18, y),
                 Size = new Vector2(ViewW - 250, 26),
                 Text = "",
                 Visible = false,
@@ -2316,6 +2548,20 @@ public partial class Main : Node2D
             Style(item, 13, new Color(0.78f, 0.75f, 0.66f, 0.90f));
             _choice.AddChild(item);
             _choiceItems[i] = item;
+
+            // 右侧那半句只给攻城用：门槛缺什么、兵够不够打赢。别的拍空着。
+            var note = new Label
+            {
+                Position = new Vector2(226, y),
+                Size = new Vector2(196, 26),
+                Text = "",
+                Visible = false,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(note, 10, new Color(0.62f, 0.59f, 0.51f, 0.90f));
+            _choice.AddChild(note);
+            _choiceNotes[i] = note;
         }
 
         _choiceFoot = new Label
@@ -2542,9 +2788,19 @@ public partial class Main : Node2D
             _trust.AddChild(_trustRoutes[i]);
         }
 
+        // 兵力放在最底：三条轴与两条路线说的是"人心"，兵力说的是"手里还有什么"。
+        _trustTroops = new Label
+        {
+            Position = new Vector2(18, 212),
+            Size = new Vector2(412, 18),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_trustTroops, 11, new Color(0.90f, 0.84f, 0.68f, 0.96f));
+        _trust.AddChild(_trustTroops);
+
         var foot = new Label
         {
-            Position = new Vector2(18, 220),
+            Position = new Vector2(18, 232),
             Size = new Vector2(412, 16),
             Text = "Tab / Esc 关上",
         };
@@ -2929,6 +3185,16 @@ public partial class Main : Node2D
             return $"弹出的是 {_choiceBeat.Id}，不是 {beat.Id}";
 
         _choiceSel = PrologueBeats.NormalizePick(beat, pick);
+
+        // 攻城那一拍：票面默认第 0 项「围」，可城里没断粮时它点不动。
+        // 跑批要证明"这条路走得完"，那就退到第一种能用的法子（通常是「攻」）。
+        if (_siegeScreen is not null && !_siegeScreen.CanUse(_choiceSel))
+        {
+            var usable = _siegeScreen.FirstUsable();
+            GD.Print($"[通关] {beat.Id} 第 {_choiceSel + 1} 法用不上，改走第 {usable + 1} 法");
+            _choiceSel = usable;
+        }
+
         ConfirmChoice();
 
         return _beats!.Machine.IsDone(beat) ? null : "确认之后这一拍没记上";
