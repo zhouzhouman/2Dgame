@@ -24,6 +24,9 @@
     E11 items.csv / gifts.csv 表结构、loot 覆盖、引用与旗标名
     E12 trust.csv / routes.csv 表结构、id、三轴取值（−10..10 整数）、路线轴与阈值、三轴全 0
     E13 shops.csv 表结构、shop 取值、item 引用、价与存量、同物黑市价 ≤ 官市价
+    E14 siege.csv / recruit.csv 表结构、四法齐全、刻数/伤亡/民怨/天命区间、
+        needs 只认四种写法、官望门槛与 routes.csv 对齐、打赢门槛 troops_needed 正整数、
+        招兵三档与 trust 引用
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -61,6 +64,20 @@
       反过来写就是数据错，不是设计选择。
     * E13 还要求 official / black 各至少一行，且至少一件物品两边都卖——两边都卖的那一件
       是玩家能直接看见"官市贵、黑市贱"的唯一证据，没有它这一课就教不出来。
+    * E14 的 siege.csv 是 §8.6 攻城四法那张表：民怨 +20/+8/0/+30、天命 −5/0/+3/−15 是
+      原文直给；ke（长/短/中）与 casualty（低/高/极低/中）文档只有相对量，表里落成整数，
+      故区间只卡合理性（刻 1..8、伤亡 0..100、民怨 0..40、天命 −20..10），不卡具体值。
+    * E14 的 needs 方言只有四种：`trust:guan>=N` / `troops>=N` / `flag:name` / 空。
+      写 "官望>60" 这种中文比较式一律红——引擎里没有这个解析器，写了就是永远不可选。
+    * E14 的官望门槛必须与 routes.csv 的 inside 阈值是同一个数：两处打架时玩家会看到
+      "官望 60 可选内应"和"内应要 70"同时成立，只有一处是真话。
+    * E14 把两件事分开卡：`needs` 是"能不能选"，`troops_needed` 是"打不打得赢"。
+      合在一起写就会重演 60 vs 72 的两处打架——攻那一行的 needs 因此故意留空，
+      兵不够也能硬选，结果按 §16.5 撤退，这正是"攻"的代价。
+      troops_needed 卡 1..200：引擎侧（SiegeMethod.MaxTroopsNeed=9999）只防打错零，
+      这里是内容门，序章兵力就在几十的量级，四位数的门槛一定是写错了。
+    * E14 的 recruit.option 对应 beats.csv b07 的 options 顺序（给粮|给承诺|抢兵器），
+      三档各一行；trust 允许留空（承诺/抢夺的代价不落三轴），非空则必须在 trust.csv 里。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -110,6 +127,39 @@ SHOP_COLS = ["shop", "item", "price", "stock", "note"]
 SHOP_NAMES = ("official", "black")                 # 官市 / 黑市
 STOCK_MIN, STOCK_MAX = 1, 20                      # 这一趟能买的份数
 MARKET_TRUST_IDS = ("market_official", "market_black")   # §5.2 两条交易后果必须有行
+
+# E14：攻城四法（§8.6）+ 招兵三选项（§18.5 场景7 / 关卡 §3.5）
+SIEGE_COLS = ["id", "label", "ke", "casualty", "minyuan", "tianming", "needs", "troops_needed", "note"]
+SIEGE_IDS = ("surround", "assault", "inside", "burn")   # 围 / 攻 / 间（内应）/ 水·火
+SIEGE_ROWS = len(SIEGE_IDS)
+KE_MIN, KE_MAX = 1, 8                      # 刻数：短→3、中→4–5、长→6
+CASUALTY_MIN, CASUALTY_MAX = 0, 100        # 伤亡百分比
+MINYUAN_MIN, MINYUAN_MAX = 0, 40           # 民怨增量
+TIANMING_MIN, TIANMING_MAX = -20, 10       # 天命增量
+TROOPS_NEEDED_MIN, TROOPS_NEEDED_MAX = 1, 200   # 打赢门槛；内容门比引擎的 9999 紧
+# needs 只认这四种写法（空串 = 无条件）；中文比较式没有解析器，直接红
+NEED_TRUST = re.compile(r"^trust:(?:guan|min)>=(\d{1,3})$")
+NEED_TROOPS = re.compile(r"^troops>=(\d{1,3})$")
+NEED_FLAG = re.compile(r"^flag:[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+INSIDE_ROUTE_ID = "inside"                 # 官望门槛要对齐的那一行
+
+RECRUIT_COLS = ["option", "troops", "trust", "note"]
+RECRUIT_OPTIONS = ("0", "1", "2")          # b07：给粮 / 给承诺 / 抢兵器
+RECRUIT_TROOPS_MIN, RECRUIT_TROOPS_MAX = 10, 200
+
+
+def need_kind(needs):
+    """返回 (合法与否, 写法的类别, 门槛数或 None)。空串算合法、类别为空。"""
+    s = (needs or "").strip()
+    if not s:
+        return True, "", None
+    for kind, rx in (("trust", NEED_TRUST), ("troops", NEED_TROOPS)):
+        m = rx.match(s)
+        if m:
+            return True, kind, int(m.group(1))
+    if NEED_FLAG.match(s):
+        return True, "flag", None
+    return False, "", None
 
 # 文档/校对用的那一份（生成器写；与游戏读的那份同源）
 DOC_CSV = os.path.join(ROOT, "举火_序章数据_全关卡_v1.1.csv")
@@ -730,6 +780,155 @@ def check_shops(shops_path, items_path, trust_path):
     return errors
 
 
+def check_siege_recruit(siege_path, recruit_path, routes_path, trust_path):
+    """E14：攻城四法 + 招兵三档。两张都是手维护表，与文档 CSV 无关。"""
+    errors = []
+
+    # —— routes.csv 的 inside 阈值：needs 里的官望门槛要与它同一个数 ——
+    inside_th = None
+    if os.path.isfile(routes_path):
+        _, route_rows = read_table(routes_path, ROUTE_COLS)
+        for r in route_rows:
+            if (r.get("id") or "").strip() == INSIDE_ROUTE_ID:
+                val, why = parse_coord(r.get("threshold"))
+                if not why:
+                    inside_th = val
+
+    if not os.path.isfile(siege_path):
+        errors.append(Err("E14", "-", "siege.csv", "-", "找不到 siege.csv（攻城四法没处查代价）"))
+    else:
+        missing, rows = read_table(siege_path, SIEGE_COLS)
+        if missing:
+            errors.append(Err("E14", "-", "siege.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+        else:
+            if len(rows) != SIEGE_ROWS:
+                errors.append(Err("E14", "-", "siege.csv", "-",
+                                  "行数应为 %d（%s），实际 %d"
+                                  % (SIEGE_ROWS, " / ".join(SIEGE_IDS), len(rows))))
+
+            seen = Counter()
+            for n, r in enumerate(rows, start=2):
+                sid = (r.get("id") or "").strip()
+                where = "第 %d 行" % n
+                seen[sid] += 1
+                who = "siege:" + (sid or where)
+
+                if sid not in SIEGE_IDS:
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "id=%r 不在 %s" % (sid, " / ".join(SIEGE_IDS))))
+                if not (r.get("label") or "").strip():
+                    errors.append(Err("E14", "siege.csv", who, "-", "label 为空（选择项没有名字）"))
+
+                for col, lo, hi in (("ke", KE_MIN, KE_MAX),
+                                    ("casualty", CASUALTY_MIN, CASUALTY_MAX),
+                                    ("minyuan", MINYUAN_MIN, MINYUAN_MAX),
+                                    ("tianming", TIANMING_MIN, TIANMING_MAX)):
+                    val, why = parse_coord(r.get(col))
+                    if why:
+                        errors.append(Err("E14", "siege.csv", who, "-", "%s %s（只收整数）" % (col, why)))
+                    elif not lo <= val <= hi:
+                        errors.append(Err("E14", "siege.csv", who, "-",
+                                          "%s=%d 应在 %d..%d" % (col, val, lo, hi)))
+
+                tn, tnwhy = parse_coord(r.get("troops_needed"))
+                if tnwhy:
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "troops_needed %s（打赢门槛要一个整数）" % tnwhy))
+                elif not TROOPS_NEEDED_MIN <= tn <= TROOPS_NEEDED_MAX:
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "troops_needed=%d 应在 %d..%d（打赢门槛）"
+                                      % (tn, TROOPS_NEEDED_MIN, TROOPS_NEEDED_MAX)))
+
+                needs = (r.get("needs") or "").strip()
+                ok, kind, th = need_kind(needs)
+                if not ok:
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "needs=%r 不是四种写法之一（trust:guan>=60 / troops>=60 / "
+                                      "flag:name / 空）——引擎没有别的解析器，写了就永远不可选" % needs))
+                elif kind == "trust" and inside_th is not None:
+                    if th != inside_th:
+                        errors.append(Err("E14", "siege.csv", who, "-",
+                                          "needs 的官望门槛 %d 与 routes.csv 的 %s 阈值 %d 不一致"
+                                          "（两处打架，玩家看到两套门槛）"
+                                          % (th, INSIDE_ROUTE_ID, inside_th)))
+                elif kind == "trust" and inside_th is None:
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "needs 写了 trust 门槛，但 routes.csv 里没有可对齐的 %s 一行"
+                                      % INSIDE_ROUTE_ID))
+
+                if not (r.get("note") or "").strip():
+                    errors.append(Err("E14", "siege.csv", who, "-",
+                                      "note 为空（每个数要能指回文档哪一节，折算的要说清）"))
+
+            for sid in SIEGE_IDS:
+                if not seen.get(sid):
+                    errors.append(Err("E14", "siege.csv", "siege:" + sid, "-", "四法缺这一行"))
+            for sid, cnt in sorted(seen.items()):
+                if sid and cnt > 1:
+                    errors.append(Err("E14", "siege.csv", "siege:" + sid, "-",
+                                      "id 重复（共 %d 条）" % cnt))
+
+    # —— recruit.csv ——
+    trust_ids = set()
+    if os.path.isfile(trust_path):
+        _, trust_rows = read_table(trust_path, TRUST_COLS)
+        trust_ids = {(r.get("id") or "").strip() for r in trust_rows}
+        trust_ids.discard("")
+
+    if not os.path.isfile(recruit_path):
+        errors.append(Err("E14", "-", "recruit.csv", "-",
+                          "找不到 recruit.csv（招兵三档没处查收益）"))
+        return errors
+
+    missing, rows = read_table(recruit_path, RECRUIT_COLS)
+    if missing:
+        errors.append(Err("E14", "-", "recruit.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+        return errors
+
+    if len(rows) != len(RECRUIT_OPTIONS):
+        errors.append(Err("E14", "-", "recruit.csv", "-",
+                          "行数应为 %d（给粮/给承诺/抢兵器），实际 %d"
+                          % (len(RECRUIT_OPTIONS), len(rows))))
+
+    seen = Counter()
+    for n, r in enumerate(rows, start=2):
+        opt = (r.get("option") or "").strip()
+        where = "第 %d 行" % n
+        seen[opt] += 1
+        who = "recruit:" + (opt or where)
+
+        if opt not in RECRUIT_OPTIONS:
+            errors.append(Err("E14", "recruit.csv", who, "-",
+                              "option=%r 只能是 0（给粮）/ 1（给承诺）/ 2（抢兵器）" % opt))
+
+        troops, why = parse_coord(r.get("troops"))
+        if why:
+            errors.append(Err("E14", "recruit.csv", who, "-", "troops %s（只收整数）" % why))
+        elif not RECRUIT_TROOPS_MIN <= troops <= RECRUIT_TROOPS_MAX:
+            errors.append(Err("E14", "recruit.csv", who, "-",
+                              "troops=%d 应在 %d..%d（招到多少人）"
+                              % (troops, RECRUIT_TROOPS_MIN, RECRUIT_TROOPS_MAX)))
+
+        tid = (r.get("trust") or "").strip()
+        if tid and trust_ids and tid not in trust_ids:
+            errors.append(Err("E14", "recruit.csv", who, "-",
+                              "trust=%r 不在 trust.csv（这一档的三轴增减没处查）" % tid))
+
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E14", "recruit.csv", who, "-",
+                              "note 为空（出处与折算都要写在这）"))
+
+    for opt in RECRUIT_OPTIONS:
+        if not seen.get(opt):
+            errors.append(Err("E14", "recruit.csv", "recruit:" + opt, "-", "三档缺这一行"))
+    for opt, cnt in sorted(seen.items()):
+        if opt and cnt > 1:
+            errors.append(Err("E14", "recruit.csv", "recruit:" + opt, "-",
+                              "option 重复（共 %d 条）" % cnt))
+
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
@@ -920,13 +1119,19 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
                               os.path.join(data_dir, "items.csv"),
                               os.path.join(data_dir, "trust.csv")))
 
+    # —— E14 攻城四法 / 招兵三档 ——
+    errors.extend(check_siege_recruit(os.path.join(data_dir, "siege.csv"),
+                                      os.path.join(data_dir, "recruit.csv"),
+                                      os.path.join(data_dir, "routes.csv"),
+                                      os.path.join(data_dir, "trust.csv")))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
-          "信任轴/路线 + 官市/黑市 + 两份 points 同源")
+          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -1064,6 +1269,37 @@ def _selftest_e13(tmp):
     return dearer_hit and ghost_hit
 
 
+def _selftest_e14(tmp):
+    """E14 自测：needs 写成中文比较式 + recruit 的 trust 指向不存在的动作，两处都要报出。"""
+    _, siege = read_table(os.path.join(DEFAULT_DATA, "siege.csv"), SIEGE_COLS)
+    _, recruit = read_table(os.path.join(DEFAULT_DATA, "recruit.csv"), RECRUIT_COLS)
+    routes_path = os.path.join(DEFAULT_DATA, "routes.csv")
+    trust_path = os.path.join(DEFAULT_DATA, "trust.csv")
+
+    bad_siege = [dict(r) for r in siege]
+    for r in bad_siege:
+        if r["id"] == "inside":
+            r["needs"] = "官望>60"          # 中文比较式：没有解析器
+        if r["id"] == "burn":
+            r["troops_needed"] = "0"        # 打赢门槛不能是 0，也不能空
+    bad_recruit = [dict(r) for r in recruit]
+    for r in bad_recruit:
+        if r["option"] == "0":
+            r["trust"] = "ghost_act"        # trust.csv 里没有这条
+
+    d = os.path.join(tmp, "e14")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "siege.csv"), SIEGE_COLS, bad_siege)
+    _write_csv(os.path.join(d, "recruit.csv"), RECRUIT_COLS, bad_recruit)
+    msgs = [e.msg for e in check_siege_recruit(os.path.join(d, "siege.csv"),
+                                              os.path.join(d, "recruit.csv"),
+                                              routes_path, trust_path)]
+    need_hit = any("不是四种写法之一" in m for m in msgs)
+    trust_hit = any("不在 trust.csv" in m for m in msgs)
+    troops_hit = any("troops_needed" in m for m in msgs)
+    return need_hit and trust_hit and troops_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -1095,10 +1331,11 @@ def selftest():
 
         _write_csv(os.path.join(data_dir, "points.csv"), POINT_COLS, points)
         _write_csv(os.path.join(data_dir, "npcs.csv"), NPC_COLS, npcs)
-        # E11 / E12 / E13 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
+        # E11 / E12 / E13 / E14 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
         for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS),
                            ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
-                           ("shops.csv", SHOP_COLS)):
+                           ("shops.csv", SHOP_COLS), ("siege.csv", SIEGE_COLS),
+                           ("recruit.csv", RECRUIT_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -1130,6 +1367,10 @@ def selftest():
             print("[selftest] 官市/黑市 E13 未报出")
             return 1
         print("[selftest] 官市/黑市 E13 1/1")
+        if not _selftest_e14(tmp):
+            print("[selftest] 攻城四法/招兵 E14 未报出")
+            return 1
+        print("[selftest] 攻城四法/招兵 E14 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -1144,7 +1385,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13 各一处")
+                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13/E14 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")

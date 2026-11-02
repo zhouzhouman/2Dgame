@@ -12,8 +12,8 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class SaveState
 {
-    /// <summary>当前存档版本（schema v3：序章多了 prologue 节）。</summary>
-    public const int CurrentVersion = 3;
+    /// <summary>当前存档版本（schema v4：序章多了 prologue.troops 兵力）。</summary>
+    public const int CurrentVersion = 4;
 
     /// <summary>还能读的最低版本（更早的按"需迁移"处理）。</summary>
     public const int MinVersion = 1;
@@ -127,6 +127,7 @@ public sealed class SaveState
         Prologue.Normalize();
 
         // v2 及更早没有 prologue 节：读进来就是"节拍一件没做"，这是可接受的降级（S1-06）。
+        // v3 及更早没有 prologue.troops：读进来是 0，其余字段一个不动。
         // 只升不降：比当前版本新的档保持原样，交给 IsTooNew 拒收。
         if (Version < CurrentVersion) Version = CurrentVersion;
 
@@ -149,13 +150,19 @@ public sealed class SaveState
 }
 
 /// <summary>
-/// 序章进度（schema v3 新增）。第几天复用顶层 <see cref="SaveState.Day"/>，这里只记节拍。
+/// 序章进度（schema v3 新增）。第几天复用顶层 <see cref="SaveState.Day"/>，这里只记节拍与兵力。
 /// </summary>
 public sealed class PrologueState
 {
     /// <summary>已完成的节拍 id，按剧情顺序；v2 旧档读进来是空数组。</summary>
     [JsonPropertyName("beats_done")]
     public List<string> BeatsDone { get; set; } = new();
+
+    /// <summary>
+    /// 手里还有多少兵（schema v4 新增）。
+    /// v3 及更早的档没有这一项，读进来是 0——那时候的玩家确实一个兵都没有。
+    /// </summary>
+    public int Troops { get; set; }
 
     /// <summary>未知字段：保留并写回。</summary>
     [JsonExtensionData]

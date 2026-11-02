@@ -52,7 +52,7 @@ public class SaveStateTests
 
         var b = SaveState.FromJson(a.ToJson());
 
-        // 写进去的是 v2 档，读出来已经被迁移到当前版本（v3）；其余字段一个不变。
+        // 写进去的是 v2 档，读出来已经被迁移到当前版本（v4）；其余字段一个不变。
         Assert.Equal(SaveState.CurrentVersion, b.Version);
         Assert.Empty(b.Prologue.BeatsDone);
         Assert.Equal(20260815, b.Seed);
@@ -95,7 +95,7 @@ public class SaveStateTests
     {
         var json = new SaveState().ToJson();
 
-        Assert.Contains("\"version\": 3", json);
+        Assert.Contains("\"version\": 4", json);
         Assert.Contains("\n  \"day\": 1", json);
     }
 
@@ -104,7 +104,7 @@ public class SaveStateTests
     {
         var s = SaveState.FromJson("{}");
 
-        Assert.Equal(3, s.Version);
+        Assert.Equal(4, s.Version);
         Assert.Equal(0, s.Seed);
         Assert.Equal(1, s.Day);
         Assert.Equal("prologue", s.Tense);
