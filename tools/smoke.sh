@@ -137,6 +137,17 @@ if [ "$FAST" = "0" ]; then
   }
   step "两市交易（官市涨官望／黑市涨疑心／门槛挡人）" markets || true
 
+  transition() {
+    local out
+    out="$("$GODOT" --headless --path Juhuo -- --transition 2>&1)"
+    echo "$out" | grep -E "^\[转段\] (可立|国策|序章完成)" | head -3
+    # 三件事都要真的发生：能列出许过的国策、能立起来、最后判完成
+    echo "$out" | grep -q "可立的国策" || return 1
+    echo "$out" | grep -qE "国策 [0-9]+ 条：" || return 1
+    echo "$out" | grep -q "序章完成：是"
+  }
+  step "转段结算（定都/国号/国策/序章完成）" transition || true
+
   step "引导五步" tutrun || true
 
   savetest() {

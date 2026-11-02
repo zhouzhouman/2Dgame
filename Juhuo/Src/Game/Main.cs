@@ -191,6 +191,37 @@ public partial class Main : Node2D
     /// <summary>信任面板底部那一行：<c>兵力 60</c>。</summary>
     private Label _trustTroops = default!;
 
+    // —— 转段四页（S2-05c）——
+    /// <summary>誓约表（oaths.csv）。</summary>
+    private OathTable _oathTable = default!;
+
+    /// <summary>国号表（realms.csv）。</summary>
+    private RealmTable _realmTable = default!;
+
+    /// <summary>转段结算器；表读不进来时为 null。</summary>
+    private TransitionBook? _transitionBook;
+
+    /// <summary>转段面板；没开时为 null。</summary>
+    private TransitionScreen? _transitionScreen;
+
+    /// <summary>
+    /// 转段要写进 <c>prologue</c> 的那一份存档。**SaveGame 每次都要从这里抄四样**
+    /// （Capital / Realm / Oaths / Debts）——SaveGame 另起一份 SaveState，不抄就白选了。
+    /// </summary>
+    private SaveState _transitionState = new();
+
+    private Panel _transition = default!;
+    private Label _transitionHead = default!;
+    private Label _transitionFlash = default!;
+
+    /// <summary>四页共用的一组行：定都七行、报告十行，按最长的那一页备。</summary>
+    private readonly Label[] _transitionRows = new Label[10];
+    private Label _transitionFoot = default!;
+    private bool _transitionOpen;
+
+    /// <summary>这一局是 <c>--transition</c> 自检（同样不碰玩家那份档）。</summary>
+    private bool _transitionRun;
+
     /// <summary>提示停留多久之后开始淡出（秒）。</summary>
     private const float ToastHold = 2f;
 
@@ -257,6 +288,10 @@ public partial class Main : Node2D
         _siegeRun = args.Contains("--siege");
         if (_siegeRun) _saveBlocked = true;
 
+        // --transition 自造十二拍与两条承诺走完四页，走完就退；同样不碰玩家那份档。
+        _transitionRun = args.Contains("--transition");
+        if (_transitionRun) _saveBlocked = true;
+
         LoadProgress();
         BuildUi();
 
@@ -292,6 +327,10 @@ public partial class Main : Node2D
             _siegeTable = SiegeTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/siege.csv"));
             _recruitTable = RecruitTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/recruit.csv"));
 
+            // 转段四页（S2-05c）：誓约表与国号表都是数据，结算在 Core，四页在 Application
+            _oathTable = OathTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/oaths.csv"));
+            _realmTable = RealmTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/realms.csv"));
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
@@ -302,7 +341,7 @@ public partial class Main : Node2D
             // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
-            else if (!_shopRun && !_siegeRun) LoadSave();
+            else if (!_shopRun && !_siegeRun && !_transitionRun) LoadSave();
 
             // 三轴只在存档里存一份：这里拿到的就是 SaveState.Trust["prologue"] 那个对象，
             // 账本就地改它，SaveGame 再原样交回去。没有条目时用存档默认值，不自己设初值。
@@ -326,6 +365,13 @@ public partial class Main : Node2D
             _beats = PrologueBeats.FromState(_beatTable, _world.Flags, _loadedState);
             SettleKnock();
             GD.Print($"[节拍] 第 {_beats.Day} 天，已做 {_beats.Progress.DoneCount}/{_beats.Progress.TotalCount} 拍");
+
+            // 转段（S2-05c）：四样结果写进这一份存档，SaveGame 每次从这里抄进新档。
+            // 读进来的档若已经置了 prologue.done，IsDone 为真，后面不会再弹。
+            _transitionState = _loadedState ?? new SaveState();
+            _transitionBook = new TransitionBook(_oathTable, _realmTable, _world.Flags, _transitionState);
+            GD.Print($"[转段·表] 誓约 {_oathTable.Count} 条、国号 {_realmTable.Count} 个"
+                     + $"，这一档{(_transitionBook.IsDone ? "已" : "未")}转段");
 
             foreach (var a in OS.GetCmdlineUserArgs())
                 if (a.StartsWith("--hub=", StringComparison.Ordinal))
@@ -355,6 +401,10 @@ public partial class Main : Node2D
             }
 
             Mount();
+
+            // 读档时十二拍已经走完、但上一次没走完转段：把界面接起来接着走。
+            // IsDone 的档不会走到这里（IsDone 为真时 MaybeResumeTransition 直接不动）。
+            MaybeResumeTransition();
 
             if (OS.GetCmdlineUserArgs().Contains("--highlight"))
                 _view.ForceHighlight = true;
@@ -554,6 +604,23 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
         }
 
+        // 开发辅助：--transition 十二拍都做完、许过两条承诺，走完四页并打印六行（S2-05c）
+        if (_transitionRun)
+        {
+            if (_oathTable is not null && _realmTable is not null)
+            {
+                foreach (var line in TransitionDemo.Run(_oathTable, _realmTable))
+                    GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{TransitionText.Prefix} 初始化没完成（oaths.csv / realms.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
         if (OS.GetCmdlineUserArgs().Contains("--demo") && _world is not null)
             RunDemo();
 
@@ -701,6 +768,13 @@ public partial class Main : Node2D
     public override void _UnhandledInput(InputEvent @event)
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
+
+        // 转段四页压在一切之上：四页之内 Esc 也不退（这是不可逆的十分钟）。
+        if (_transitionOpen)
+        {
+            HandleTransitionKey(k.Keycode);
+            return;
+        }
 
         // 柜台开着时，键盘归它：↑↓ 选行、Enter 成交、Tab 换块、Esc / T 关上。
         if (_shopOpen)
@@ -1117,7 +1191,10 @@ public partial class Main : Node2D
 
         if (_beatLine is not null)
         {
-            var line = _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
+            // 转段四页开着时，别让 HUD 提前写「序章已完成」——那四个字要留在收尾页。
+            var line = _transitionOpen && _beats is not null
+                ? $"第 {_beats.Day} 天 · 转段：定都 → 国号 → 国策 → 国情报告"
+                : _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
 
             // 囊跟在节拍后面。快满了才变色——一直刺眼等于没提示。
             _beatLine.Text = (line + BagHud.Suffix(_world.Bag)).Trim();
@@ -1991,6 +2068,210 @@ public partial class Main : Node2D
         if (restoreTutorial) PaintTutorial();
     }
 
+    // ————————————————————————— 转段四页（S2-05c） —————————————————————————
+
+    /// <summary>
+    /// 读档之后接上没走完的转段：十二拍都做完、而且还没转过段时才开。
+    /// 已转过段的档（<see cref="TransitionBook.IsDone"/>）这里一步都不动——不再弹第二次。
+    /// </summary>
+    private void MaybeResumeTransition()
+    {
+        if (_transitionRun || _playthrough || _bagRun || _shopRun || _siegeRun) return;
+        if (_transitionBook is null || _transitionBook.IsDone) return;
+        if (_beats is null || !_beats.AllDone) return;
+
+        OpenTransition();
+    }
+
+    /// <summary>开转段：四页压在最上面，走动与 E 全交给它。</summary>
+    private void OpenTransition()
+    {
+        if (_transitionBook is null || _realmTable is null) return;
+        if (_transitionScreen is not null) return;
+
+        // 转段这一份存档要自己知道"十二拍走完了"：TransitionBook.Missing 读的是
+        // prologue.beats_done，不是运行中的状态机。不同步，Finish 会永远说"还差 12 拍"。
+        _beats?.Machine.ToState(_transitionState);
+
+        _transitionScreen = new TransitionScreen(_transitionBook, _realmTable, _transitionState);
+        _transitionOpen = true;
+
+        if (_choiceOpen) CloseChoice(restoreTutorial: false);
+        if (_box.Visible) CloseBox();
+
+        _transition.Visible = true;
+        _tutPanel.Visible = false;
+        _hint.Visible = false;
+        if (_view is not null) _view.UiBlocking = true;
+
+        UpdateChrome();
+        PaintTransition();
+        GD.Print($"[转段] 打开四页：许过 {_transitionScreen.Made.Count} 条承诺");
+    }
+
+    /// <summary>收尾页按 Esc：退出转段，回到游戏里。之后 HUD 会写「序章已完成」。</summary>
+    private void CloseTransition()
+    {
+        if (!_transitionOpen) return;
+
+        _transitionOpen = false;
+        _transitionScreen = null;
+        _transition.Visible = false;
+
+        _hint.Visible = !_box.Visible;
+        if (_view is not null)
+            _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _trustOpen || _shopOpen;
+
+        UpdateChrome();
+        SetHint("序章完成。", 4f);
+        GD.Print("[转段] 四页走完，序章完成");
+    }
+
+    /// <summary>报告页最后一行要的实数：兵力 / 三轴 / 囊 / 第几天。</summary>
+    private ReportFacts TransitionFacts()
+    {
+        var axes = _trustBook?.State ?? new TrustState();
+
+        return new ReportFacts(
+            _troops,
+            axes.Guan,
+            axes.Min,
+            axes.Yi,
+            _world?.Bag.SlotsUsed ?? 0,
+            _world?.Bag.Capacity ?? Inventory.DefaultCapacity,
+            _beats?.Day ?? 0);
+    }
+
+    /// <summary>报告页的十行：前四行照刚选的，中间五行是文档原句，最后一行是实数。</summary>
+    private IReadOnlyList<TransitionRow> ReportRows(TransitionScreen screen)
+    {
+        var lines = screen.ReportLines(TransitionFacts());
+        var rows = new List<TransitionRow>(lines.Count);
+        foreach (var line in lines) rows.Add(new TransitionRow("", line, false));
+        return rows;
+    }
+
+    /// <summary>把当前那一页画出来。每次按键都重画，不指望控件自己会跳。</summary>
+    private void PaintTransition()
+    {
+        if (_transitionScreen is null) return;
+
+        var screen = _transitionScreen;
+        _transitionHead.Text = screen.Head;
+
+        var flash = screen.Flash.Length > 0 ? screen.Flash : screen.Note;
+        _transitionFlash.Text = flash;
+        _transitionFlash.Visible = flash.Length > 0;
+
+        var rows = screen.Page switch
+        {
+            TransitionPage.Capital => screen.CapitalRows(),
+            TransitionPage.Realm => screen.RealmRows(),
+            TransitionPage.Oaths => screen.OathRows(),
+            TransitionPage.Report => ReportRows(screen),
+            _ => Array.Empty<TransitionRow>(),
+        };
+
+        for (var i = 0; i < _transitionRows.Length; i++)
+        {
+            var label = _transitionRows[i];
+            if (i >= rows.Count)
+            {
+                label.Visible = false;
+                continue;
+            }
+
+            var row = rows[i];
+            var cursor = screen.IsCursorAt(i);
+            var mark = screen.Page == TransitionPage.Oaths ? (row.Picked ? "✓ " : "　 ") : "";
+
+            label.Visible = true;
+            label.Text = (cursor ? "▸ " : "　 ") + mark + row.Text;
+            label.AddThemeColorOverride("font_color",
+                cursor ? new Color(0.96f, 0.82f, 0.48f, 0.98f)
+                : screen.Page == TransitionPage.Oaths && !row.Picked
+                    ? new Color(0.62f, 0.59f, 0.51f, 0.88f)
+                    : new Color(0.80f, 0.77f, 0.68f, 0.94f));
+        }
+
+        _transitionFoot.Text = screen.Foot;
+        _transitionFoot.AddThemeColorOverride("font_color",
+            screen.Page == TransitionPage.Done
+                ? new Color(0.90f, 0.80f, 0.56f, 0.96f)
+                : new Color(0.60f, 0.56f, 0.46f, 0.90f));
+    }
+
+    /// <summary>
+    /// 四页的键盘：数字挑、Enter 落、空格改勾。**Esc 在四页之内不退**，只在「序章完成」那页放人走。
+    /// 每一步落定都立刻落盘一次——这十分钟不能靠"退出时再存"。
+    /// </summary>
+    private void HandleTransitionKey(Key key)
+    {
+        if (_transitionScreen is null) return;
+
+        var screen = _transitionScreen;
+
+        if (screen.Page == TransitionPage.Done)
+        {
+            if (key == Key.Escape) CloseTransition();
+            return;
+        }
+
+        var saved = false;
+
+        switch (screen.Page)
+        {
+            case TransitionPage.Capital:
+                saved = key switch
+                {
+                    Key.Key1 or Key.Kp1 => screen.SelectCapital(0),
+                    Key.Key2 or Key.Kp2 => screen.SelectCapital(1),
+                    Key.Key3 or Key.Kp3 => screen.SelectCapital(2),
+                    Key.Key4 or Key.Kp4 => screen.SelectCapital(3),
+                    Key.Key5 or Key.Kp5 => screen.SelectCapital(4),
+                    Key.Key6 or Key.Kp6 => screen.SelectCapital(5),
+                    Key.Key7 or Key.Kp7 => screen.SelectCapital(6),
+                    _ => false,
+                };
+                break;
+
+            case TransitionPage.Realm:
+                saved = key switch
+                {
+                    Key.Key1 or Key.Kp1 => screen.SelectRealm(0),
+                    Key.Key2 or Key.Kp2 => screen.SelectRealm(1),
+                    Key.Key3 or Key.Kp3 => screen.SelectRealm(2),
+                    Key.Key4 or Key.Kp4 => screen.SelectRealm(3),
+                    _ => false,
+                };
+                break;
+
+            case TransitionPage.Oaths:
+                switch (key)
+                {
+                    case Key.Up or Key.W: screen.MoveCursor(-1); break;
+                    case Key.Down or Key.S: screen.MoveCursor(1); break;
+                    case Key.Space: screen.ToggleOath(); break;
+                }
+
+                break;
+        }
+
+        if (key is Key.Enter or Key.KpEnter or Key.E)
+            saved |= screen.Advance();
+        else if (key == Key.Escape)
+            screen.RefuseBack();
+
+        if (saved)
+        {
+            SaveGame();
+            GD.Print($"[转段] 落盘：都城 {_transitionState.Prologue.Capital}｜国号 {_transitionState.Prologue.Realm}"
+                     + $"｜国策 {_transitionState.Prologue.Oaths.Count} 条｜未决 {_transitionState.Prologue.Debts.Count} 条");
+        }
+
+        PaintTransition();
+    }
+
     /// <summary>一拍做完之后：刷新那一行、落盘、补记敲门、看看有没有下一拍能弹。</summary>
     private void AfterBeat(Beat beat)
     {
@@ -1999,6 +2280,13 @@ public partial class Main : Node2D
         UpdateChrome();
         SaveGame();
         SettleKnock();
+
+        // b12 落定的同一刻开转段（S2-05c）：不等玩家再按什么，也不许他自己走开。
+        if (TransitionTrigger.IsDue(_transitionBook, beat.Id))
+        {
+            MaybeResumeTransition();
+            return;
+        }
 
         // 同一空间里下一拍也是选择型（b05→b06、b11→b12）：进来那一刻弹过一次就不会再弹，
         // 而玩家没有理由再"进一次"这个空间。这一拍落定之后立刻问下一拍。
@@ -2121,8 +2409,19 @@ public partial class Main : Node2D
         // 反过来也不会错，但顺序写清楚，读档的人一眼能对上 S1-06 的语义表。
         _beats?.Machine.ToState(state);
 
+        // 转段那一份也保持同一份进度：它要拿 prologue.beats_done 判"十二拍走完没有"。
+        _beats?.Machine.ToState(_transitionState);
+
         // 兵力跟在节拍进度后面：招兵加的、攻城扣的都在 _troops 这一份里（schema v4 的 prologue.troops）。
         state.Prologue.Troops = _troops;
+
+        // 转段四样（schema v5）：SaveGame 每次另起一份 SaveState，不抄就白选了。
+        // 旗标走 _world.Flags（Finish 两边都置），这里只把四样值原样带过去。
+        var prologue = _transitionState.Prologue;
+        state.Prologue.Capital = prologue.Capital;
+        state.Prologue.Realm = prologue.Realm;
+        state.Prologue.Oaths = new List<string>(prologue.Oaths ?? new List<string>());
+        state.Prologue.Debts = new List<string>(prologue.Debts ?? new List<string>());
 
         // 三条轴写回现有的 Trust["prologue"]：形状不变、不加字段。
         if (_trustBook is not null) TrustWiring.Store(state, _trustBook);
@@ -2366,6 +2665,7 @@ public partial class Main : Node2D
         BuildBag(ui);
         BuildTrust(ui);
         BuildShop(ui);
+        BuildTransition(ui);
 
         PaintTutorial();
         _help.Visible = false;
@@ -2904,6 +3204,78 @@ public partial class Main : Node2D
         };
         Style(_shopFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.88f));
         _shop.AddChild(_shopFoot);
+    }
+
+    /// <summary>
+    /// 转段四页的面板（S2-05c）：定都、国号、国策、国情报告，最后一页是「序章完成」。
+    ///
+    /// 四页共用一组行：定都七行、报告十行，按最长的那一页备十行；每页只点亮自己用得上的。
+    /// 页面内容全由 <see cref="TransitionScreen"/> 算，这里只负责画和递按键。
+    /// </summary>
+    private void BuildTransition(CanvasLayer ui)
+    {
+        _transition = new Panel
+        {
+            Position = new Vector2(60, 62),
+            Size = new Vector2(520, 340),
+            Visible = false,
+        };
+        _transition.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.042f, 0.046f, 0.044f, 0.98f),
+            BorderColor = new Color(0.74f, 0.36f, 0.24f, 0.94f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 2,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_transition);
+
+        _transitionHead = new Label
+        {
+            Position = new Vector2(18, 12),
+            Size = new Vector2(480, 22),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_transitionHead, 15, new Color(0.96f, 0.90f, 0.72f, 0.98f));
+        _transition.AddChild(_transitionHead);
+
+        _transitionFlash = new Label
+        {
+            Position = new Vector2(18, 44),
+            Size = new Vector2(480, 16),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_transitionFlash, 10, new Color(0.90f, 0.68f, 0.36f, 0.96f));
+        _transition.AddChild(_transitionFlash);
+
+        for (var i = 0; i < _transitionRows.Length; i++)
+        {
+            var row = new Label
+            {
+                Position = new Vector2(18, 70 + i * 22),
+                Size = new Vector2(484, 20),
+                Text = "",
+                Visible = false,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(row, 12, new Color(0.78f, 0.75f, 0.66f, 0.92f));
+            _transition.AddChild(row);
+            _transitionRows[i] = row;
+        }
+
+        _transitionFoot = new Label
+        {
+            Position = new Vector2(18, 310),
+            Size = new Vector2(484, 18),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_transitionFoot, 9, new Color(0.60f, 0.56f, 0.46f, 0.90f));
+        _transition.AddChild(_transitionFoot);
     }
 
     private void Style(Label l, int size, Color color)
