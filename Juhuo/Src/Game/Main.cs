@@ -18,6 +18,8 @@ namespace Juhuo;
 ///   1–4            选项面板里挑一项
 ///   Enter          选项面板里确认
 ///   Ctrl（按住）   把当前场景所有可交互物框出来
+///   I              打开 / 关上囊（12 格）
+///   G              对话里把囊中之物给他看
 ///   Esc            关掉对话；什么都没开时打开操作说明
 ///   H              操作说明
 ///
@@ -33,6 +35,8 @@ public partial class Main : Node2D
     private PointTable _table = default!;
     private NpcTalkTable _talks = default!;
     private DialogueBook _book = default!;
+    private ItemCatalog _items = default!;
+    private GiftTable _gifts = default!;
     private World _world = default!;
     private MapView _view = default!;
 
@@ -42,6 +46,7 @@ public partial class Main : Node2D
     private Panel _box = default!;
     private Label _boxHead = default!;
     private Label _boxBody = default!;
+    private Label _boxFoot = default!;
     private FontFile? _font;
 
     // —— 新手引导 ——
@@ -57,6 +62,30 @@ public partial class Main : Node2D
     // —— 操作说明 ——
     private Panel _help = default!;
     private bool _helpOpen;
+
+    // —— 囊 ——
+    /// <summary>囊的面板：12 格、方向键选、X / Del 丢。</summary>
+    private Panel _bag = default!;
+    private Label _bagHead = default!;
+    private Label _bagCount = default!;
+    private Label _bagFoot = default!;
+    private readonly Label[] _bagCells = new Label[Inventory.DefaultCapacity];
+    private readonly Panel[] _bagFrames = new Panel[Inventory.DefaultCapacity];
+    private BagPanel? _bagPanel;
+    private bool _bagOpen;
+
+    /// <summary>开着的是"给他看"，不是自己翻囊。</summary>
+    private bool _bagShowing;
+
+    /// <summary>"给他看"是跟谁。gifts.csv 的 npc 列写的是显示名。</summary>
+    private string _bagNpc = "";
+
+    /// <summary>从对话框里点开的——关上之后把对话还回去。</summary>
+    private bool _bagFromBox;
+
+    /// <summary>HUD 那一行平时 / 快满时的颜色。</summary>
+    private static readonly Color BeatInk = new(0.93f, 0.72f, 0.44f, 0.94f);
+    private static readonly Color BagInk = new(0.86f, 0.42f, 0.32f, 0.98f);
 
     /// <summary>临时消息（"到了。白幡村"）的保留时间，别被下一帧的提示盖掉。</summary>
     private float _hintHoldUntil;
@@ -107,6 +136,9 @@ public partial class Main : Node2D
     /// <summary>这一局是通关跑批（不读不写玩家那份档）。</summary>
     private bool _playthrough;
 
+    /// <summary>这一局是 <c>--bag</c> 自检（同样不碰玩家那份档）。</summary>
+    private bool _bagRun;
+
     public override void _Ready()
     {
         _save = new SaveService(GodotSaveFileSystem.Create());
@@ -118,6 +150,10 @@ public partial class Main : Node2D
         // 这一句要在 LoadProgress 之前：进度文件也不能被跑批改掉。
         _playthrough = args.Contains("--playthrough");
         if (_playthrough) _saveBlocked = true;
+
+        // --bag 也一样：囊里装的是这一趟捡到的，不能掺进玩家的旧物。
+        _bagRun = args.Contains("--bag");
+        if (_bagRun) _saveBlocked = true;
 
         LoadProgress();
         BuildUi();
@@ -132,7 +168,13 @@ public partial class Main : Node2D
             var talkCsv = FileAccess.GetFileAsString("res://Content/data/npcs.csv");
             _talks = NpcTalkTable.FromCsv(talkCsv);
             _book = DialogueBook.FromCsv(talkCsv);
-            _world = new World(_table, _talks, _book);
+
+            // 囊与"给他看"：两张表都是数据，规则在 Core，接线在本票（S1-03c）
+            _items = ItemCatalog.FromCsv(FileAccess.GetFileAsString("res://Content/data/items.csv"));
+            _gifts = GiftTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/gifts.csv"));
+
+            _world = new World(_table, _talks, _book, _items, _gifts);
+            _bagPanel = new BagPanel(_world.Bag, _items);
 
             // 十二节拍：表是数据，状态机是 Core，接法是本票（S1-06c）。
             _beatTable = BeatTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/beats.csv"));
@@ -144,8 +186,9 @@ public partial class Main : Node2D
             _world.Knocked += OnKnocked;
 
             // 读档。坏档给一句人话，从新游戏开始——绝不崩、绝不白屏。
-            // 通关跑批从第 1 天、0 拍起跑，旧档一律不认：不然跑出来的是玩家的进度。
+            // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
+            else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
             else LoadSave();
 
             // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
@@ -331,6 +374,13 @@ public partial class Main : Node2D
             }
         }
 
+        // 开发辅助：--bag 在 hub1 把可搜点依次搜一遍（走真实搜查入口），打印囊然后退出（S1-03c）
+        if (_bagRun && _world is not null)
+        {
+            RunBagCheck();
+            _quitAfterFrame = true;
+        }
+
         if (OS.GetCmdlineUserArgs().Contains("--demo") && _world is not null)
             RunDemo();
 
@@ -443,6 +493,13 @@ public partial class Main : Node2D
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
 
+        // 囊开着时，方向键归格子，E 归"给他看"，X 归"丢"。
+        if (_bagOpen)
+        {
+            HandleBagKey(k.Keycode);
+            return;
+        }
+
         // 选项面板开着时，键盘归它：数字挑、回车落、Esc 稍后再说。
         if (_choiceOpen)
         {
@@ -452,6 +509,14 @@ public partial class Main : Node2D
 
         switch (k.Keycode)
         {
+            case Key.I:
+                ToggleBag();
+                break;
+
+            case Key.G:
+                OpenGiftPanel();
+                break;
+
             case Key.H:
                 ToggleHelp();
                 break;
@@ -755,6 +820,12 @@ public partial class Main : Node2D
         _boxHead.Text = head;
         _boxBody.Text = body;
 
+        // 跟人说话时才提"给他看"——搜东西搜出来的那一页没有这个入口
+        if (_boxFoot is not null)
+            _boxFoot.Text = _world.NearestSpeaker() is not null
+                ? "G 给他看　·　E / Esc 关掉"
+                : "E / Esc 关掉";
+
         _view.SetBoxOpen(true);
         _view.UiBlocking = true;
         if (_tutPanel is not null) _tutPanel.Visible = false;
@@ -769,7 +840,8 @@ public partial class Main : Node2D
         if (_view is not null)
         {
             _view.SetBoxOpen(false);
-            _view.UiBlocking = _helpOpen || _choiceOpen;
+            // 囊还压在上面时不能放开走路
+            _view.UiBlocking = _helpOpen || _choiceOpen || _bagOpen;
         }
 
         _hint.Visible = true;
@@ -812,7 +884,220 @@ public partial class Main : Node2D
         _subtitle.Text = $"刻 {_world.KeUsed}/{_world.KeBudget}　·　已搜 {searched}/{_world.Props.Count}";
 
         if (_beatLine is not null)
-            _beatLine.Text = _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
+        {
+            var line = _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
+
+            // 囊跟在节拍后面。快满了才变色——一直刺眼等于没提示。
+            _beatLine.Text = (line + BagHud.Suffix(_world.Bag)).Trim();
+            _beatLine.AddThemeColorOverride("font_color",
+                BagHud.Warn(_world.Bag) ? BagInk : BeatInk);
+        }
+    }
+
+    // ————————————————————————— 囊 —————————————————————————
+
+    /// <summary>
+    /// I：开合自己的囊。对话 / 说明 / 选项压着的时候不开——
+    /// 玩家这会儿要看的是那一页，不是自己的东西。
+    /// </summary>
+    private void ToggleBag()
+    {
+        if (_world is null || _bagPanel is null) return;
+
+        if (_bagOpen)
+        {
+            CloseBag(restoreBox: true);
+            return;
+        }
+
+        if (_box.Visible || _helpOpen || _choiceOpen) return;
+
+        OpenBag(showing: false, npc: "");
+    }
+
+    /// <summary>
+    /// G：在对话里把囊打开，选中的那一样就是"给他看"的东西。
+    /// 跟前得有人；没人的时候按 G 什么都不发生，别弹一个用不上的面板。
+    /// </summary>
+    private void OpenGiftPanel()
+    {
+        if (_world is null || _bagPanel is null || _bagOpen) return;
+        if (!_box.Visible) return;
+
+        var who = _world.NearestSpeaker();
+        if (who is null) return;
+
+        OpenBag(showing: true, npc: who.Name);
+    }
+
+    private void OpenBag(bool showing, string npc)
+    {
+        if (_bagPanel is null) return;
+
+        _bagShowing = showing;
+        _bagNpc = npc;
+        _bagFromBox = _box.Visible;
+        _bagOpen = true;
+        _bagPanel.Select(0);
+
+        // 两层册子不叠着放：囊压在上面时，先把对话收起来（关囊时还回去）
+        if (_bagFromBox) _box.Visible = false;
+        _hint.Visible = false;
+        _tutPanel.Visible = false;
+
+        _bag.Visible = true;
+        _view.UiBlocking = true;
+
+        PaintBag();
+    }
+
+    private void CloseBag(bool restoreBox)
+    {
+        if (!_bagOpen) return;
+
+        _bagOpen = false;
+        _bag.Visible = false;
+
+        if (restoreBox && _bagFromBox) _box.Visible = true;
+
+        _bagFromBox = false;
+        _bagShowing = false;
+        _bagNpc = "";
+
+        _hint.Visible = !_box.Visible;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
+
+        UpdateChrome();
+        RefreshHint();
+        PaintTutorial();
+    }
+
+    /// <summary>囊开着时的键盘。WASD 也能用——走动这时候本来就是停的。</summary>
+    private void HandleBagKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Left or Key.A:
+                MoveBag(-1, 0);
+                break;
+
+            case Key.Right or Key.D:
+                MoveBag(1, 0);
+                break;
+
+            case Key.Up or Key.W:
+                MoveBag(0, -1);
+                break;
+
+            case Key.Down or Key.S:
+                MoveBag(0, 1);
+                break;
+
+            case Key.X or Key.Delete:
+                DropSelected();
+                break;
+
+            case Key.E:
+            case Key.Enter:
+            case Key.KpEnter:
+                if (_bagShowing) ConfirmShow();
+                break;
+
+            case Key.I:
+            case Key.Escape:
+                CloseBag(restoreBox: true);
+                break;
+        }
+    }
+
+    private void MoveBag(int dx, int dy)
+    {
+        if (_bagPanel is null) return;
+        _bagPanel.Move(dx, dy);
+        PaintBag();
+    }
+
+    /// <summary>丢一件。可叠的减一个，不可叠的腾出一格。</summary>
+    private void DropSelected()
+    {
+        if (_bagPanel is null || _bagShowing) return;
+
+        var item = _bagPanel.SelectedItem;
+        if (item is null || !_bagPanel.Drop()) return;
+
+        PaintBag();
+        _bagFoot.Text = $"你丢下了{BagPickup.NameOf(_items, item)}。";
+        UpdateChrome();
+    }
+
+    /// <summary>给他看：三种反应分开，落旗标由 World 转给 FlagStore。</summary>
+    private void ConfirmShow()
+    {
+        if (_bagPanel is null || _world is null) return;
+
+        var item = _bagPanel.SelectedItem;
+        if (item is null) return;
+
+        var result = _world.ShowItem(_bagNpc, item);
+        var text = GiftPresenter.Reaction(result);
+        var npc = _bagNpc;
+
+        CloseBag(restoreBox: false);
+
+        _box.Visible = true;
+        _boxHead.Text = $"{npc}　　给他看";
+        _boxBody.Text = text;
+        _boxFoot.Text = "E / Esc 关掉";
+
+        _view.SetBoxOpen(true);
+        _view.SwallowInteract();      // 这一下 E 已经用掉了，别再让它把这句话关掉
+        _view.UiBlocking = true;
+        _hint.Visible = false;
+
+        UpdateChrome();
+    }
+
+    /// <summary>把 12 格重画一遍。选中那格换框、换字色，其余照旧。</summary>
+    private void PaintBag()
+    {
+        if (_bagPanel is null) return;
+
+        _bagHead.Text = _bagShowing ? $"给他看　·　{_bagNpc}" : "囊";
+        _bagCount.Text = _bagPanel.CountLabel;
+        _bagFoot.Text = _bagShowing
+            ? "方向键选一件　·　E 给他看　·　Esc / I 收起来"
+            : "方向键选格　·　X / Del 丢一件　·　I / Esc 关上";
+
+        for (var i = 0; i < _bagCells.Length; i++)
+        {
+            var label = _bagPanel.LabelAt(i);
+            var picked = i == _bagPanel.Selected && label.Length > 0;
+
+            _bagCells[i].Text = label.Length == 0 ? "" : (picked ? "▸ " : "　 ") + label;
+            _bagCells[i].AddThemeColorOverride("font_color", picked
+                ? new Color(0.97f, 0.86f, 0.55f, 0.99f)
+                : new Color(0.84f, 0.81f, 0.73f, 0.94f));
+
+            _bagFrames[i].AddThemeStyleboxOverride("panel", picked
+                ? new StyleBoxFlat
+                {
+                    BgColor = new Color(0.14f, 0.12f, 0.08f, 0.90f),
+                    BorderColor = new Color(0.86f, 0.66f, 0.34f, 0.95f),
+                    BorderWidthTop = 1,
+                    BorderWidthBottom = 1,
+                    BorderWidthLeft = 1,
+                    BorderWidthRight = 1,
+                }
+                : new StyleBoxFlat
+                {
+                    BgColor = new Color(0.045f, 0.050f, 0.048f, 0.70f),
+                    BorderColor = new Color(0.34f, 0.30f, 0.24f, 0.85f),
+                    BorderWidthTop = 1,
+                    BorderWidthBottom = 1,
+                    BorderWidthLeft = 1,
+                    BorderWidthRight = 1,
+                });
+        }
     }
 
     /// <summary>
@@ -834,6 +1119,12 @@ public partial class Main : Node2D
     private void TryShowChoice()
     {
         if (_beats is null || _world is null || _choiceOpen || _box.Visible || _helpOpen) return;
+
+        // --bag 只翻东西，不答决断：面板压上来会把后面的按键全吃掉。
+        if (_bagRun) return;
+
+        // 囊压在上面时也不弹：两层面板叠在一起，玩家不知道该听谁的。
+        if (_bagOpen) return;
 
         var beat = _beats.PendingChoice(_world.Hub);
         if (beat is null) return;
@@ -1164,7 +1455,7 @@ public partial class Main : Node2D
     private void SaveProgress()
     {
         // 通关跑批会把七个空间各走一遍（LastHub 一路变），别拿它去改玩家那份进度。
-        if (_playthrough) return;
+        if (_playthrough || _bagRun) return;
 
         using var f = FileAccess.Open(ProgressPath, FileAccess.ModeFlags.Write);
         f?.StoreString(_progress.Serialize());
@@ -1265,6 +1556,7 @@ public partial class Main : Node2D
         BuildTextBox(ui);
         BuildHelp(ui);
         BuildChoice(ui);
+        BuildBag(ui);
 
         PaintTutorial();
         _help.Visible = false;
@@ -1313,23 +1605,23 @@ public partial class Main : Node2D
         _box.AddChild(_boxBody);
 
         // 明确告诉玩家怎么关：没有这句，很多人读完会卡在对话里
-        var close = new Label
+        _boxFoot = new Label
         {
-            Position = new Vector2(ViewW - 132, 7),
-            Size = new Vector2(96, 17),
+            Position = new Vector2(ViewW - 236, 7),
+            Size = new Vector2(200, 17),
             Text = "E / Esc 关掉",
             HorizontalAlignment = HorizontalAlignment.Right,
         };
-        Style(close, 9, new Color(0.58f, 0.55f, 0.46f, 0.80f));
-        _box.AddChild(close);
+        Style(_boxFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.80f));
+        _box.AddChild(_boxFoot);
     }
 
     private void BuildHelp(CanvasLayer ui)
     {
         _help = new Panel
         {
-            Position = new Vector2(60, 62),
-            Size = new Vector2(520, 300),
+            Position = new Vector2(60, 46),
+            Size = new Vector2(520, 348),
         };
         _help.AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
@@ -1354,17 +1646,21 @@ public partial class Main : Node2D
         var body = new Label
         {
             Position = new Vector2(22, 50),
-            Size = new Vector2(478, 206),
+            Size = new Vector2(478, 258),
             Text =
                 "走　　W A S D ／ 方向键\n" +
                 "搜　　E 或空格：搜查 · 交谈 · 离开\n" +
                 "看　　按住 Ctrl：把这一处能碰的东西全框出来\n" +
                 "选　　1–4 挑一项，Enter（或 E）落下\n" +
-                "关　　Esc：关掉对话；什么都没开时打开这份说明\n\n" +
+                "囊　　I：打开 / 关上；方向键选格，X 或 Del 丢一件\n" +
+                "示　　G：对话里把囊中之物给他看\n" +
+                "关　　Esc：关掉这一页；什么都没开时打开这份说明\n\n" +
                 "· 黄框 ＝ 能按 E。紫框的东西，得先知道它是什么才看得见。\n" +
+                "· 囊只有十二格，没有仓库。装不下就丢一件，回来还能再搜。\n" +
+                "· 给别人看东西，他认不认、你事先知不知道，是两种反应。\n" +
                 "· 出口是黄框加一根黄箭头，走过去按 E。还有没看的地方，会先拦你一次。\n" +
                 "· 刻用完了不赶你走，只是天黑之前看不完了。\n" +
-                "· 顶上那一行写着第几天、这一处叫什么、眼下该做什么。\n" +
+                "· 顶上一行写着第几天、这一处叫什么、眼下该做什么、囊还剩几格。\n" +
                 "· 有些事要做个决断，面板会自己推上来；Esc 可以先搁着，回头再问。",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
@@ -1373,7 +1669,7 @@ public partial class Main : Node2D
 
         var foot = new Label
         {
-            Position = new Vector2(22, 262),
+            Position = new Vector2(22, 312),
             Size = new Vector2(478, 20),
             Text = "Esc / H　关掉",
         };
@@ -1449,6 +1745,98 @@ public partial class Main : Node2D
         };
         Style(_choiceFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.85f));
         _choice.AddChild(_choiceFoot);
+    }
+
+    /// <summary>
+    /// 囊的面板：4 × 3 的十二格。自己翻囊时按 X 丢，对话里按 G 打开时选中的那一样
+    /// 就是"给他看"的东西——两种用法共用这一张网。
+    /// </summary>
+    private void BuildBag(CanvasLayer ui)
+    {
+        const int cols = BagPanel.Columns;
+        const int cellW = 100;
+        const int cellH = 50;
+
+        _bag = new Panel
+        {
+            Position = new Vector2(100, 90),
+            Size = new Vector2(440, 244),
+            Visible = false,
+        };
+        _bag.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.048f, 0.052f, 0.050f, 0.97f),
+            BorderColor = new Color(0.66f, 0.50f, 0.28f, 0.92f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 1,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_bag);
+
+        _bagHead = new Label
+        {
+            Position = new Vector2(18, 12),
+            Size = new Vector2(260, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_bagHead, 13, new Color(0.96f, 0.90f, 0.72f));
+        _bag.AddChild(_bagHead);
+
+        _bagCount = new Label
+        {
+            Position = new Vector2(340, 12),
+            Size = new Vector2(84, 20),
+            Text = "0/12",
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_bagCount, 12, new Color(0.86f, 0.76f, 0.52f, 0.95f));
+        _bag.AddChild(_bagCount);
+
+        for (var i = 0; i < _bagCells.Length; i++)
+        {
+            var frame = new Panel
+            {
+                Position = new Vector2(18 + i % cols * cellW, 40 + i / cols * cellH),
+                Size = new Vector2(cellW - 4, cellH - 4),
+            };
+            frame.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+            {
+                BgColor = new Color(0.045f, 0.050f, 0.048f, 0.70f),
+                BorderColor = new Color(0.34f, 0.30f, 0.24f, 0.85f),
+                BorderWidthTop = 1,
+                BorderWidthBottom = 1,
+                BorderWidthLeft = 1,
+                BorderWidthRight = 1,
+            });
+            _bag.AddChild(frame);
+            _bagFrames[i] = frame;
+
+            var cell = new Label
+            {
+                Position = new Vector2(6, 5),
+                Size = new Vector2(cellW - 18, cellH - 14),
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(cell, 11, new Color(0.84f, 0.81f, 0.73f, 0.94f));
+            frame.AddChild(cell);
+            _bagCells[i] = cell;
+        }
+
+        _bagFoot = new Label
+        {
+            Position = new Vector2(18, 206),
+            Size = new Vector2(404, 18),
+            Text = "方向键选格　·　X / Del 丢一件　·　I / Esc 关上",
+        };
+        Style(_bagFoot, 10, new Color(0.60f, 0.56f, 0.47f, 0.88f));
+        _bag.AddChild(_bagFoot);
     }
 
     private void Style(Label l, int size, Color color)
@@ -1596,6 +1984,41 @@ public partial class Main : Node2D
         "knowledge" => "？",
         _ => "明面",
     };
+
+    /// <summary>
+    /// <c>--bag</c>：在 hub1 走真实搜查入口把每一处翻一遍，打印囊里有什么。
+    ///
+    /// 囊满被拒也照常往下走——"拒收、这一处不算搜过"本身就是要看的东西之一。
+    /// 不读不写玩家的档，跑完退出 0。
+    /// </summary>
+    private void RunBagCheck()
+    {
+        var picked = 0;
+
+        // 进 hub1 可能先弹一个决断；它会把按键吃掉，先搁着
+        if (_choiceOpen) CloseChoice(restoreTutorial: false);
+
+        foreach (var p in _world.Props.ToList())
+        {
+            if (_choiceOpen) CloseChoice(restoreTutorial: false);
+
+            if (!StandAt(p, out var why))
+            {
+                GD.Print($"[囊] {p.Point.Id} 站不到跟前：{why}");
+                continue;
+            }
+
+            _view.PressInteract();
+            CloseIfOpen();
+
+            picked += _world.LastPicked.Count;
+
+            if (_world.LastRejectedItem is { Length: > 0 } rejected)
+                GD.Print(BagReport.RejectedLine(_items, rejected));
+        }
+
+        foreach (var line in BagReport.Lines(_world.Bag, _items, picked)) GD.Print(line);
+    }
 
     /// <summary>截一小段台词打日志。台词里有换行，整段打出来会把自检刷屏。</summary>
     private static string Cut(string? text, int n = 16)

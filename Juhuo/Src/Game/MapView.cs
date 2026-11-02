@@ -162,6 +162,15 @@ public partial class MapView : Node2D
     /// <summary>开发/测试用：等价于按一次 E。</summary>
     public void PressInteract() => DoSearch();
 
+    /// <summary>
+    /// 这一下 E 被别人用掉了，别再算作"按了一次"。
+    ///
+    /// 输入事件先于 _Process：面板在 _UnhandledInput 里拿 E 确认之后，
+    /// 同一帧的轮询还会看见这颗键，转头就把刚弹出来的对话框关掉——
+    /// 玩家只看见一句话闪了一下。
+    /// </summary>
+    public void SwallowInteract() => _searchHeld = true;
+
     /// <summary>对话框的开合由 Main 管，这里只需要知道"现在别让玩家走"。</summary>
     public void SetBoxOpen(bool open) => _boxOpen = open;
 
@@ -215,6 +224,15 @@ public partial class MapView : Node2D
         var result = _world.Search();
         if (result is null)
         {
+            // 囊满不是"这里没什么可翻的"：东西还在，是他装不下。
+            // 不说清楚，玩家会以为这一点被浪费了，转头就走。
+            if (_world.LastRejectedItem is not null)
+            {
+                var name = _world.Nearest()?.Point.Name ?? "这里";
+                TextShown?.Invoke($"{name}　　囊", _world.LastSearchNote);
+                return;
+            }
+
             // 节拍的退化路径：这一处有一拍"按 E 完成"，而手边没有实物可翻。
             if (_world.Nearest() is null && InteractFallback is not null && InteractFallback()) return;
 
@@ -226,7 +244,7 @@ public partial class MapView : Node2D
 
         var (text, first, prop) = result.Value;
         var head = $"{prop.Point.Name}　　{LayerLabel(prop.Point.Layer)}";
-        if (!string.IsNullOrEmpty(prop.Point.Loot)) head += $"　　+ {prop.Point.Loot}";
+        head += _world.LastLootSummary;
 
         TextShown?.Invoke(head, text);
         Searched?.Invoke(prop.Point.Id);

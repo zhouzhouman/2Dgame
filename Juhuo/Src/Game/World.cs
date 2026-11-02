@@ -115,6 +115,18 @@ public sealed class World
     /// <summary>Hub1 的敲门计时。按刻算，不按秒（见 <see cref="KnockTimer"/>）。</summary>
     private readonly KnockTimer _knock = new();
 
+    /// <summary>囊：12 格，没有仓库（CANON §4）。规则在 Core 的 <see cref="Inventory"/>。</summary>
+    private readonly Inventory _bag = new();
+
+    /// <summary>物品表；接不上就只当没东西可捡，不替玩家丢东西。</summary>
+    private readonly ItemCatalog? _items;
+
+    /// <summary>"给他看"的应答表；接不上就当谁都不认。</summary>
+    private readonly GiftTable? _gifts;
+
+    /// <summary>上一次搜到的那几样（用来在提示后面补一句"（+14 铜钱）"）。</summary>
+    private IReadOnlyList<LootEntry> _lastPicked = Array.Empty<LootEntry>();
+
     /// <summary>
     /// 每个空间一本刻账。刻数只有 Core 说了算，这里只负责取——
     /// Game 层不再自己算 KeUsed / KeLeft（rule_time_clock.md 是唯一数值源）。
@@ -179,6 +191,21 @@ public sealed class World
     /// <summary>旗标仓库。给表现层与存档用。</summary>
     public FlagStore Flags => _flags;
 
+    /// <summary>玩家的囊。格数与叠法全在 Core，这里只负责搬进搬出。</summary>
+    public Inventory Bag => _bag;
+
+    /// <summary>物品表（没接上时为 null；界面据此决定要不要画囊）。</summary>
+    public ItemCatalog? Items => _items;
+
+    /// <summary>上一次搜到的那几样，按装进去的顺序。</summary>
+    public IReadOnlyList<LootEntry> LastPicked => _lastPicked;
+
+    /// <summary>上一次搜到的"（+14 铜钱 · +1 干净衣裳）"；没捡到就是空串。</summary>
+    public string LastLootSummary { get; private set; } = "";
+
+    /// <summary>上一次囊满被拒的那一件的 id；没被拒为 null。</summary>
+    public string? LastRejectedItem { get; private set; }
+
     /// <summary>已用刻。整数刻，向下取整（Core 说了算，对玩家有利）。</summary>
     public int KeUsed => _clock.KeUsedKe;
 
@@ -242,11 +269,14 @@ public sealed class World
     private static readonly string[] HubOrder =
         { "hub1", "hub2", "hub3", "hub4", "hub5", "hub6", "hub7" };
 
-    public World(PointTable table, NpcTalkTable talks, DialogueBook? book = null)
+    public World(PointTable table, NpcTalkTable talks, DialogueBook? book = null,
+        ItemCatalog? items = null, GiftTable? gifts = null)
     {
         _table = table;
         _talks = talks;
         _book = book ?? DialogueBook.FromTalks(talks);
+        _items = items;
+        _gifts = gifts;
         Load("hub1");
     }
 
@@ -725,6 +755,31 @@ public sealed class World
     }
 
     /// <summary>
+    /// 把囊里的一件东西给跟前的人看（序章关卡设计 §2.5）。
+    ///
+    /// 认不认、你事先知不知道，都由 <see cref="GiftTable"/> 判；这里只做两件 Game 该做的事：
+    /// 传进去的是**显示名**（<c>gifts.csv</c> 的 npc 列写的是"陈三"这种名字，
+    /// <c>npcs.csv</c> 还没有 id 列，S1-10 之后才换），以及把 <c>sets</c> 落进旗标仓库。
+    /// </summary>
+    /// <param name="npc">NPC 的显示名（台词表里的 name）。</param>
+    /// <param name="item">物品 id。</param>
+    /// <returns>赠礼结果；没接表就是"他不认"。</returns>
+    public GiftResult ShowItem(string? npc, string? item)
+    {
+        if (_gifts == null) return GiftResult.None;
+
+        var result = _gifts.Show(npc, item, name => _flags.Has(name, Hub));
+
+        foreach (var flag in result.Applied)
+            if (!_flags.Set(flag))
+                GD.PushWarning($"[旗标] 「{flag}」写不进去（名字超长或仓库满了），这一条作废。");
+
+        if (result.Applied.Count > 0) StateChanged?.Invoke();
+
+        return result;
+    }
+
+    /// <summary>
     /// 到点就敲门。只敲一次（旗标 <c>hub1.knock.happened</c> 保证），
     /// 刻从 <see cref="Clock.KeUsedKe"/> 读，这里不自己算。
     /// </summary>
@@ -759,18 +814,39 @@ public sealed class World
 
         LastSearchNote = "";
 
+        var list = SearchedList();
+        var first = !list.Contains(p.Point.Id);
+
+        // 囊先说话：装不下就整处都不算搜过，也不收刻——
+        // 玩家丢掉点东西回来还能再搜，而不是白花一刻换一句"囊满了"。
+        var plan = BagSearch.Plan(first, p.Point.Loot, _bag, _items);
+        if (!plan.CanSearch)
+        {
+            _lastPicked = Array.Empty<LootEntry>();
+            LastLootSummary = "";
+            LastRejectedItem = plan.Loot.RejectedId;
+            LastSearchNote = plan.Refusal ?? Inventory.FullMessage;
+            Say(LastSearchNote);
+            return null;
+        }
+
         // 结算顺序（rule_time_clock.md §边界）：先记刻，再落世界后果。
         // 重搜一样收费——不然"翻不完"的取舍就不成立（§3）。
         _clock.SpendSearch(p.Point.Cost);
 
-        var list = SearchedList();
-        var first = !list.Contains(p.Point.Id);
         if (first)
         {
             list.Add(p.Point.Id);
             ApplyFlag(p.Point.SetFlag);
             TickVillage();
         }
+
+        // 只有第一次搜才收东西：同一处翻两遍不该翻出第二份钱。
+        _lastPicked = first && _items != null
+            ? BagPickup.Apply(plan.Loot, _bag, _items)
+            : Array.Empty<LootEntry>();
+        LastLootSummary = BagPickup.Describe(_lastPicked, _items);
+        LastRejectedItem = null;
 
         var text = first ? p.Point.TextOnce : p.Point.TextRepeat;
         CheckKnock();
@@ -878,6 +954,9 @@ public sealed class World
         state.Player.X = Player.Cell.X;
         state.Player.Y = Player.Cell.Y;
 
+        // 囊：一格一项，形状不变（schema_v2.md §C 的 inventory）
+        state.Inventory = _bag.ToSave();
+
         foreach (var kv in _flags.SnapshotGlobal())
             state.Flags[kv.Key] = kv.Value;
 
@@ -945,6 +1024,9 @@ public sealed class World
 
         // 旗标：Core 的仓库自己负责全局 / 局部的优先级
         _flags.Load(state);
+
+        // 囊：原样收下（表里查不到的 id 也留着，玩家的东西不能因为版本更新消失）
+        _bag.LoadFrom(state.Inventory);
 
         // 每个空间的刻账、搜过的东西、被看见次数
         foreach (var (hub, hubState) in state.Hubs)

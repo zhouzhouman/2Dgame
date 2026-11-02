@@ -1,0 +1,6 @@
+﻿"npc","item","requires","sets","note"
+"陈三","bread","","knows_herb_path,gift.chen_san.bread_given","出处：关卡设计 §3.3 隐藏触发 L2（半张饼给陈三→他告诉你后山有草药）。置 knows_herb_path 是为了让 bf_0k 后山入口的知识门真的打开"
+"阿禾","shoe","knows_shoe_inward","gift.ah_e.shoe_given","出处：关卡设计 §2.5 例 + §4.3 赠礼矩阵 + NPC 对话 Hub7 A 变体。§2.5 要求先知道那是孩子的鞋；表可用的旗标只有 bf_06 的 knows_shoe_inward，此映射是推断，待 D2 确认"
+"老鸦","token","","gift.laoya.token_given","出处：关卡设计 §3.5 隐藏触发 L2 + §4.3 赠礼矩阵（腰牌给老鸦，忠诚 +20）"
+"县丞","magistrate_ledger","has_magistrate_ledger","gift.xiancheng.ledger_given","出处：关卡设计 §3.4 隐藏触发 L3 + NPC 对话 Hub4 C 分支（私账，§4.3 作「寿宴免礼」）"
+"米铺老板","sand_rice","has_sand_rice","gift.mipu.sand_rice_given","出处：关卡设计 §3.4 NPC 表（给他看掺沙的米→降价 20%）+ NPC 对话 Hub4 A 分支"

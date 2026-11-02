@@ -2,7 +2,8 @@
 
 用途
     把 Content 里的表与地图对一遍，错一次全报出来，有错就红。
-    另外两件事：两份 points CSV 是否同源（E09）、十二节拍表是否符合 schema（E10）。
+    另外三件事：两份 points CSV 是否同源（E09）、十二节拍表是否符合 schema（E10）、
+    物品表/赠礼表是否覆盖并引用得住（E11）。
 
 运行
     python tools/validate.py              # 校验 Juhuo/Content
@@ -20,6 +21,7 @@
     E08 表头缺列
     E09 两份 points CSV 不一致（生成器产出的文档 CSV vs 游戏读的 Content/data/points.csv）
     E10 beats.csv 结构错（行数 / id / day / hub / requires / sets 旗标名 / trigger）
+    E11 items.csv / gifts.csv 表结构、loot 覆盖、引用与旗标名
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -36,6 +38,12 @@
     * E10 的 sets 按 FlagStore.IsValidName 判：点号式 3–4 段、下划线式 2–4 段全小写
       ASCII、或 12 个冻结旧名，≤40 字节。名字不合法时 FlagStore.Set 是静默忽略的，
       节拍会永远完不成还没人报错，所以必须在表里就拦住。
+    * E11 的 loot 覆盖是硬错：points.loot 里出现的 id 在 items.csv 查不到，游戏就只
+      显示裸 id，没有名字、没有能不能叠。反过来 items.csv 里没被任何 loot 引用到的行
+      不报错（以后还会有别的来源），只进跳过项。
+    * E11 的赠礼表按"给他看"读：npc 必须是 npcs.csv 里有的名字（该表没有 id 列，
+      名字是唯一的键）、item 必须在 items.csv 里、requires 按同一套旗标文法判、
+      sets 为空允许（有些反应不留痕）。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -67,6 +75,10 @@ POINT_COLS = ["hub", "id", "mark", "x", "y", "layer", "name", "requires",
               "text_once", "text_repeat", "loot", "set_flag", "watch_npc", "cost"]
 NPC_COLS = ["hub", "name", "x", "y", "first", "again"]
 BEATS_COLS = ["id", "name", "hub", "day", "requires", "sets", "trigger", "options", "note"]
+ITEM_COLS = ["id", "name", "kind", "stack", "note"]
+GIFT_COLS = ["npc", "item", "requires", "sets", "note"]
+ITEM_KINDS = ("food", "tool", "token", "paper")     # 食物 / 器物 / 凭证 / 纸
+STACK_VALUES = ("0", "1")                          # 0 不可叠 / 1 可叠
 
 # 文档/校对用的那一份（生成器写；与游戏读的那份同源）
 DOC_CSV = os.path.join(ROOT, "举火_序章数据_全关卡_v1.1.csv")
@@ -82,6 +94,7 @@ NOTE_REASONS = {
     "again": "npcs again 为空（引擎回退 first，World.cs:529，不算错）",
     "sentinel": "npcs 坐标为 (0,0) 的巡逻占位（坐标由代码给定）",
     "ragged": "地图行宽不齐（按 TerrainMap 口径，短行按墙处理）",
+    "orphan_item": "items.csv 里有、但没有任何 loot 引用（以后会有别的来源，不算错）",
 }
 
 
@@ -412,10 +425,116 @@ def check_beats(path):
     return errors
 
 
+# ————————————————————————— E11 物品表 / 赠礼表 —————————————————————————
+
+def loot_refs(points):
+    """points.loot -> [(物品 id, hub, 点位 id, 坐标)]，按出现顺序，空项跳过。"""
+    refs = []
+    for r in points:
+        hub = (r.get("hub") or "?").strip()
+        pid = (r.get("id") or "?").strip()
+        coord = "%s,%s" % ((r.get("x") or "?").strip(), (r.get("y") or "?").strip())
+        for part in (r.get("loot") or "").split("|"):
+            part = part.strip()
+            if part:
+                refs.append((part.split(":")[0].strip(), hub, pid, coord))
+    return refs
+
+
+def check_items_gifts(items_path, gifts_path, points, npcs, notes, note_detail):
+    """E11：items.csv 覆盖 loot 且字段合法；gifts.csv 的 npc/item/requires/sets 都站得住。
+
+    返回值与别处一致，是 Err 列表；跳过项写进传进来的 notes / note_detail。
+    """
+    errors = []
+    items = []
+    items_ok = True
+
+    if not os.path.isfile(items_path):
+        errors.append(Err("E11", "-", "items.csv", "-",
+                          "找不到 items.csv（loot 里的 id 就没处查名字了）"))
+        items_ok = False
+    else:
+        missing, items = read_table(items_path, ITEM_COLS)
+        if missing:
+            errors.append(Err("E11", "-", "items.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+            return errors
+        seen = Counter()
+        for n, r in enumerate(items, start=2):
+            iid = (r.get("id") or "").strip()
+            name = (r.get("name") or "").strip()
+            kind = (r.get("kind") or "").strip()
+            stack = (r.get("stack") or "").strip()
+            where = "第 %d 行" % n
+            seen[iid] += 1
+            if not iid:
+                errors.append(Err("E11", "items.csv", where, "-", "id 为空"))
+            if not name:
+                errors.append(Err("E11", "items.csv", iid or where, "-",
+                                  "name 为空（游戏里会显示裸 id）"))
+            if kind not in ITEM_KINDS:
+                errors.append(Err("E11", "items.csv", iid or where, "-",
+                                  "kind=%r 不在 %s" % (kind, "/".join(ITEM_KINDS))))
+            if stack not in STACK_VALUES:
+                errors.append(Err("E11", "items.csv", iid or where, "-",
+                                  "stack=%r 只能是 0（不可叠）或 1（可叠）" % stack))
+        for iid, cnt in sorted(seen.items()):
+            if iid and cnt > 1:
+                errors.append(Err("E11", "items.csv", iid, "-", "id 重复（共 %d 条）" % cnt))
+
+    item_ids = {(r.get("id") or "").strip() for r in items}
+    item_ids.discard("")
+
+    refs = loot_refs(points)
+    for loot_id, hub, pid, coord in refs:
+        if items_ok and loot_id not in item_ids:
+            errors.append(Err("E11", hub, pid, coord,
+                              "loot 引用了 items.csv 里没有的物品 %r" % loot_id))
+
+    if items_ok:
+        for iid in sorted(item_ids - {r[0] for r in refs}):
+            notes["orphan_item"] += 1
+            note_detail.append(("orphan_item", "items.csv %s 没有任何 loot 引用" % iid))
+
+    if not os.path.isfile(gifts_path):
+        errors.append(Err("E11", "-", "gifts.csv", "-", "找不到 gifts.csv"))
+        return errors
+    gmissing, gifts = read_table(gifts_path, GIFT_COLS)
+    if gmissing:
+        errors.append(Err("E11", "-", "gifts.csv", "-", "表头缺列：%s" % ", ".join(gmissing)))
+        return errors
+
+    npc_names = {(r.get("name") or "").strip() for r in npcs}
+    npc_names.discard("")
+
+    for n, r in enumerate(gifts, start=2):
+        npc = (r.get("npc") or "").strip()
+        iid = (r.get("item") or "").strip()
+        req = (r.get("requires") or "").strip()
+        where = "第 %d 行" % n
+        who = "gift:%s→%s" % (npc or where, iid or "?")
+        if npc not in npc_names:
+            errors.append(Err("E11", "-", who, "-",
+                              "npc %r 不在 npcs.csv（该表没有 id 列，按 name 查）" % npc))
+        if items_ok and iid not in item_ids:
+            errors.append(Err("E11", "-", who, "-", "item %r 不在 items.csv" % iid))
+        if not flag_expr_ok(req):
+            hint = "；has(...) 不是合法写法，直接写裸旗标名" if HAS_LIKE.search(req) else ""
+            errors.append(Err("E11", "-", who, "-",
+                              "requires 无法解析：%r（只认裸旗标名 + & | ! + 括号%s）" % (req, hint)))
+        for flag in [x.strip() for x in (r.get("sets") or "").split(",") if x.strip()]:
+            if not flag_name_ok(flag):
+                errors.append(Err("E11", "-", who, "-",
+                                  "sets 里的旗标名 %r 不合法（点号式 3–4 段、"
+                                  "下划线式 2–4 段全小写，或冻结旧名，≤40 字节）" % flag))
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
     doc_csv / beats_path 传 None = 这次不查（selftest 用的是临时数据，比不了真实的文档 CSV）。
+    items.csv / gifts.csv 始终查：它们是手维护表，与文档 CSV 无关。
     """
     errors = []
     notes = Counter()
@@ -587,12 +706,17 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     if beats_path:
         errors.extend(check_beats(beats_path))
 
+    # —— E11 物品表 / 赠礼表 ——
+    errors.extend(check_items_gifts(os.path.join(data_dir, "items.csv"),
+                                    os.path.join(data_dir, "gifts.csv"),
+                                    points, npcs, notes, note_detail))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
-    print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + 两份 points 同源")
+    print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -650,6 +774,39 @@ def _selftest_extra(tmp):
     return hit
 
 
+def _selftest_e11(tmp):
+    """E11 自测：loot 指向不存在的物品 + 赠礼表的三处坏样本，都必须报出。"""
+    _, points = read_table(os.path.join(DEFAULT_DATA, "points.csv"), POINT_COLS)
+    _, npcs = read_table(os.path.join(DEFAULT_DATA, "npcs.csv"), NPC_COLS)
+    _, items = read_table(os.path.join(DEFAULT_DATA, "items.csv"), ITEM_COLS)
+    _, gifts = read_table(os.path.join(DEFAULT_DATA, "gifts.csv"), GIFT_COLS)
+
+    broke = [dict(r) for r in points]
+    broke[0]["loot"] = ((broke[0].get("loot") or "").strip() + "|ghost_loot:1").lstrip("|")
+
+    bad_items = [dict(r) for r in items]
+    bad_items.append({"id": "ghost_item", "name": "", "kind": "weapon", "stack": "2", "note": ""})
+
+    bad_gifts = [dict(r) for r in gifts]
+    bad_gifts.append({"npc": "没有这个人", "item": "ghost_item",
+                      "requires": "has(x)", "sets": "bad", "note": ""})
+
+    d = os.path.join(tmp, "e11")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "items.csv"), ITEM_COLS, bad_items)
+    _write_csv(os.path.join(d, "gifts.csv"), GIFT_COLS, bad_gifts)
+    errs = check_items_gifts(os.path.join(d, "items.csv"), os.path.join(d, "gifts.csv"),
+                             broke, npcs, Counter(), [])
+    msgs = [e.msg for e in errs]
+
+    loot_hit = any("ghost_loot" in m and "loot" in m for m in msgs)
+    item_hit = any("kind=" in m for m in msgs) and any("stack=" in m for m in msgs)
+    gift_hit = (any("不在 npcs.csv" in m for m in msgs)
+                and any("无法解析" in m for m in msgs)
+                and any("旗标名" in m for m in msgs))
+    return loot_hit and item_hit and gift_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -681,6 +838,10 @@ def selftest():
 
         _write_csv(os.path.join(data_dir, "points.csv"), POINT_COLS, points)
         _write_csv(os.path.join(data_dir, "npcs.csv"), NPC_COLS, npcs)
+        # E11 的两张表照抄真表：这一轮只验 E01–E05，别让物品/赠礼的红点混进来
+        for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS)):
+            _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
+            _write_csv(os.path.join(data_dir, name), cols, rows_)
 
         errors, _notes, checked, _detail = validate(maps_dir, data_dir)
         got = {e.code for e in errors}
@@ -698,6 +859,10 @@ def selftest():
             print("[selftest] 一致性/节拍检查未报出（%d/2）" % extra)
             return 1
         print("[selftest] 一致性 E09 + 节拍 E10 %d/2" % extra)
+        if not _selftest_e11(tmp):
+            print("[selftest] 物品/赠礼 E11 未报出")
+            return 1
+        print("[selftest] 物品/赠礼 E11 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:

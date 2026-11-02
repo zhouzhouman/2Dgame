@@ -98,8 +98,8 @@ public sealed class SaveService
     /// <summary>上一份正式档的备份。坏档时的第二条命。</summary>
     public const string BackupPath = "user://save.bak";
 
-    /// <summary>背包格数上限（CANON §4：背包 12 格，无仓库）。</summary>
-    public const int MaxInventory = 12;
+    /// <summary>背包格数上限（CANON §4：背包 12 格，无仓库）。规矩本体在 <see cref="Inventory"/>。</summary>
+    public const int MaxInventory = Inventory.DefaultCapacity;
 
     private readonly SaveFileSystem _fs;
     private readonly string _savePath;
@@ -258,14 +258,8 @@ public sealed class SaveService
                 return $"{hub.Key} 的局部旗标太多（{local} > {FlagStore.MaxLocalFlagsPerHub}）。";
         }
 
-        if (state.Inventory.Count > MaxInventory)
-            return $"背包装不下（{state.Inventory.Count} > {MaxInventory}）。";
-
-        foreach (var item in state.Inventory)
-            if (item != null && item.N < 1)
-                return $"背包里有件东西数量不对（{item.Item}）。";
-
-        return null;
+        // 12 格与件数的规矩在 Inventory 里，这里只转调——一处规则一处实现。
+        return Inventory.Validate(state.Inventory, MaxInventory);
     }
 
     /// <summary>
