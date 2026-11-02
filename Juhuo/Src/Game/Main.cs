@@ -112,6 +112,39 @@ public partial class Main : Node2D
     /// <summary>HUD 最上面那一行："第 3 天 · 废驿 · 该做：③ 第一口锅"。</summary>
     private Label _beatLine = default!;
 
+    // —— 双信任轴（S1-01c）——
+    /// <summary>信任动作表（trust.csv）。</summary>
+    private TrustTable _trustTable = default!;
+
+    /// <summary>攻城路线表（routes.csv）。</summary>
+    private RouteTable _routeTable = default!;
+
+    /// <summary>三条轴的账本；三轴指向存档里的那一份。</summary>
+    private TrustBook? _trustBook;
+
+    /// <summary>变化提示：HUD 那一行下面，2 秒后淡出。</summary>
+    private Label _trustToast = default!;
+    private float _toastUntil;
+
+    /// <summary>"信任"面板（Tab）。</summary>
+    private Panel _trust = default!;
+    private Label _trustHead = default!;
+    private readonly Label[] _trustAxis = new Label[3];
+    private readonly Label[] _trustValue = new Label[3];
+    private readonly Panel[] _trustTrack = new Panel[3];
+    private readonly Panel[] _trustFill = new Panel[3];
+    private readonly Label[] _trustRoutes = new Label[4];
+    private bool _trustOpen;
+
+    /// <summary>提示停留多久之后开始淡出（秒）。</summary>
+    private const float ToastHold = 2f;
+
+    /// <summary>淡出用多久（秒）。</summary>
+    private const float ToastFade = 0.45f;
+
+    /// <summary>横条满格的像素宽。</summary>
+    private const int BarWidth = 236;
+
     // —— 选项面板 ——
     private const int MaxOptions = 4;
 
@@ -123,6 +156,9 @@ public partial class Main : Node2D
     private Beat? _choiceBeat;
     private int _choiceSel;
     private bool _choiceOpen;
+
+    /// <summary>选项面板底下那行提示的常态文案（选中被门禁挡住时临时换成拒绝的那句）。</summary>
+    private string _choiceFootDefault = "";
 
     /// <summary>这份档来自更新的版本，不许读也不许盖（rule_flags_save.md §4）。</summary>
     private bool _saveBlocked;
@@ -179,6 +215,10 @@ public partial class Main : Node2D
             // 十二节拍：表是数据，状态机是 Core，接法是本票（S1-06c）。
             _beatTable = BeatTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/beats.csv"));
 
+            // 双信任轴：两张表都是数据，加多少、开不开门在 Core，接线与显示是本票（S1-01c）
+            _trustTable = TrustTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/trust.csv"));
+            _routeTable = RouteTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/routes.csv"));
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
@@ -190,6 +230,12 @@ public partial class Main : Node2D
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
             else LoadSave();
+
+            // 三轴只在存档里存一份：这里拿到的就是 SaveState.Trust["prologue"] 那个对象，
+            // 账本就地改它，SaveGame 再原样交回去。没有条目时用存档默认值，不自己设初值。
+            _trustBook = new TrustBook(TrustWiring.Restore(_loadedState), _trustTable, _routeTable);
+            GD.Print($"[信任] 官望 {_trustBook.State.Guan} 民望 {_trustBook.State.Min} 疑心 {_trustBook.State.Yi}，"
+                     + $"路线 {_trustBook.OpenRoutes().Count}/{_routeTable.Count} 开着");
 
             // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
             // （S1-06 交接单的第二个坑：顺序写反，十二拍一起变 Locked）。
@@ -448,8 +494,31 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
         }
 
-        if (OS.GetCmdlineUserArgs().Contains("--shot"))
+        // 开发辅助：--trust=<id> 拿真表走一次 Apply，把 Explain 打出来（S1-01c）。
+        foreach (var a in args)
+        {
+            if (!a.StartsWith("--trust=", StringComparison.Ordinal)) continue;
+            RunTrustCheck(a[8..]);
+        }
+
+        // 开发辅助：--shotbag / --shottrust 开面板截一张就退，和 --shot 同一条截图路径。
+        // 先把手上的选项收起来，免得截到两层面板叠在一起。
+        if (args.Contains("--shotbag"))
+        {
+            CloseChoice(restoreTutorial: false);
+            OpenBag(showing: false, npc: "");
             _ = CaptureAndQuitAsync();
+        }
+        else if (args.Contains("--shottrust"))
+        {
+            CloseChoice(restoreTutorial: false);
+            OpenTrust();
+            _ = CaptureAndQuitAsync();
+        }
+        else if (args.Contains("--shot"))
+        {
+            _ = CaptureAndQuitAsync();
+        }
     }
 
     public override void _Process(double delta)
@@ -467,6 +536,7 @@ public partial class Main : Node2D
 
         _time += (float)delta;
         TickTutorial((float)delta);
+        TickTrustToast();
 
         // Ctrl 只按一下不算学会，按住半秒才推进
         if (Input.IsKeyPressed(Key.Ctrl)) _ctrlHeld += (float)delta;
@@ -493,6 +563,14 @@ public partial class Main : Node2D
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
 
+        // 「信任」面板开着时，键盘归它：Tab / Esc 关上，别的键什么都不做
+        // （走动与 E 由 MapView 的 UiBlocking 拦住，这里只需要别再分发）。
+        if (_trustOpen)
+        {
+            HandleTrustKey(k.Keycode);
+            return;
+        }
+
         // 囊开着时，方向键归格子，E 归"给他看"，X 归"丢"。
         if (_bagOpen)
         {
@@ -515,6 +593,10 @@ public partial class Main : Node2D
 
             case Key.G:
                 OpenGiftPanel();
+                break;
+
+            case Key.Tab:
+                ToggleTrust();
                 break;
 
             case Key.H:
@@ -841,7 +923,7 @@ public partial class Main : Node2D
         {
             _view.SetBoxOpen(false);
             // 囊还压在上面时不能放开走路
-            _view.UiBlocking = _helpOpen || _choiceOpen || _bagOpen;
+            _view.UiBlocking = _helpOpen || _choiceOpen || _bagOpen || _trustOpen;
         }
 
         _hint.Visible = true;
@@ -861,7 +943,7 @@ public partial class Main : Node2D
         _helpOpen = !_helpOpen;
         _help.Visible = _helpOpen;
 
-        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _trustOpen;
 
         if (_helpOpen)
         {
@@ -910,7 +992,7 @@ public partial class Main : Node2D
             return;
         }
 
-        if (_box.Visible || _helpOpen || _choiceOpen) return;
+        if (_box.Visible || _helpOpen || _choiceOpen || _trustOpen) return;
 
         OpenBag(showing: false, npc: "");
     }
@@ -965,7 +1047,7 @@ public partial class Main : Node2D
         _bagNpc = "";
 
         _hint.Visible = !_box.Visible;
-        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _trustOpen;
 
         UpdateChrome();
         RefreshHint();
@@ -1111,6 +1193,160 @@ public partial class Main : Node2D
         return i >= 0 ? title[(i + 1)..].Trim() : title;
     }
 
+    // ————————————————————————— 双信任轴 —————————————————————————
+
+    /// <summary>
+    /// 做一件带信任代价的事：改三条轴、把变化说给玩家、落盘。
+    ///
+    /// 现在只有 <c>--trust=&lt;id&gt;</c> 从这里走——十二拍里没有任何一处该加信任，
+    /// 文档没给数值的地方不许自己编（S1-01c 的硬约束）。以后哪一拍要加减，
+    /// 走同一个入口即可，提示与存档不用再写第二遍。
+    /// </summary>
+    /// <param name="id">trust.csv 的动作 id。</param>
+    /// <returns>实际发生的增量。</returns>
+    private TrustDelta ApplyTrust(string id)
+    {
+        if (_trustBook is null) return TrustDelta.None;
+
+        var delta = _trustBook.Apply(id);
+        if (!delta.Applied) return delta;
+
+        _trustTable.TryGet(id, out var action);
+        ShowTrustToast(TrustText.Toast(_trustBook, action, delta));
+
+        UpdateChrome();
+        SaveGame();
+        return delta;
+    }
+
+    /// <summary>把那一条提示亮起来，2 秒后交给 <see cref="TickTrustToast"/> 淡出。</summary>
+    /// <param name="text">已经拼好的一行字。</param>
+    private void ShowTrustToast(string text)
+    {
+        if (_trustToast is null || string.IsNullOrEmpty(text)) return;
+
+        _trustToast.Text = text;
+        _trustToast.Visible = true;
+        _trustToast.Modulate = new Color(1f, 1f, 1f, 1f);
+        _toastUntil = _time + ToastHold;
+    }
+
+    /// <summary>
+    /// 提示的淡出。停满 2 秒之后才开始透明，最后 0.45 秒线性收掉——
+    /// 一下就消失的提示，玩家低头看一眼脚下就错过了。
+    /// </summary>
+    private void TickTrustToast()
+    {
+        if (_trustToast is null || !_trustToast.Visible) return;
+
+        var left = _toastUntil - _time;
+        if (left <= 0f)
+        {
+            _trustToast.Visible = false;
+            return;
+        }
+
+        var alpha = left >= ToastFade ? 1f : left / ToastFade;
+        _trustToast.Modulate = new Color(1f, 1f, 1f, alpha);
+    }
+
+    /// <summary>Tab：开合「信任」面板。对话 / 说明 / 选项 / 囊压着的时候不开。</summary>
+    private void ToggleTrust()
+    {
+        if (_trustBook is null) return;
+
+        if (_trustOpen)
+        {
+            CloseTrust();
+            return;
+        }
+
+        if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen) return;
+
+        OpenTrust();
+    }
+
+    /// <summary>打开面板：三条横条、两条路线，顺手把走动与 E 停下来。</summary>
+    private void OpenTrust()
+    {
+        if (_trustBook is null)
+        {
+            GD.Print("[信任] 没有信任表：trust.csv 读不进来。");
+            return;
+        }
+
+        _trustOpen = true;
+        _trust.Visible = true;
+        _tutPanel.Visible = false;
+        _hint.Visible = false;
+        if (_view is not null) _view.UiBlocking = true;
+
+        PaintTrust();
+    }
+
+    private void CloseTrust()
+    {
+        if (!_trustOpen) return;
+
+        _trustOpen = false;
+        _trust.Visible = false;
+
+        _hint.Visible = !_box.Visible;
+        if (_view is not null)
+            _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _bagOpen || _trustOpen;
+
+        PaintTutorial();
+        RefreshHint();
+    }
+
+    /// <summary>面板开着时的键盘：Tab / Esc 关上，其余一律不动——面板就是拿来读的。</summary>
+    private void HandleTrustKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Tab:
+            case Key.Escape:
+                CloseTrust();
+                break;
+        }
+    }
+
+    /// <summary>把三条横条与两行路线画成现在的样子。</summary>
+    private void PaintTrust()
+    {
+        if (_trustBook is null) return;
+
+        var panel = new TrustPanel(_trustBook);
+
+        var bars = panel.Bars();
+        for (var i = 0; i < _trustAxis.Length && i < bars.Count; i++)
+        {
+            var bar = bars[i];
+            _trustAxis[i].Text = bar.Name;
+            _trustValue[i].Text = bar.Value.ToString();
+            _trustFill[i].Size = new Vector2(Math.Max(0f, BarWidth * bar.Ratio), 8f);
+        }
+
+        var lines = panel.RouteLines();
+        var open = panel.RouteOpen();
+
+        for (var i = 0; i < _trustRoutes.Length; i++)
+        {
+            var label = _trustRoutes[i];
+            if (i >= lines.Count)
+            {
+                label.Visible = false;
+                continue;
+            }
+
+            label.Visible = true;
+            label.Text = lines[i];
+            label.AddThemeColorOverride("font_color", open[i]
+                ? new Color(0.88f, 0.79f, 0.52f, 0.96f)
+                : new Color(0.66f, 0.63f, 0.55f, 0.82f));
+        }
+    }
+
     // ————————————————————————— 十二节拍 —————————————————————————
 
     /// <summary>
@@ -1125,6 +1361,9 @@ public partial class Main : Node2D
 
         // 囊压在上面时也不弹：两层面板叠在一起，玩家不知道该听谁的。
         if (_bagOpen) return;
+
+        // 「信任」面板同理。
+        if (_trustOpen) return;
 
         var beat = _beats.PendingChoice(_world.Hub);
         if (beat is null) return;
@@ -1162,9 +1401,10 @@ public partial class Main : Node2D
             }
         }
 
-        _choiceFoot.Text = hasOptions
+        _choiceFootDefault = hasOptions
             ? "1–4 选一项　·　Enter 确认　·　Esc 稍后再说"
             : "E 或 Enter 确认　·　Esc 稍后再说";
+        _choiceFoot.Text = _choiceFootDefault;
 
         // 面板高度跟着项数走：两三项时空着一大片会显得像没画完。
         var rows = hasOptions ? beat.Options.Length : 1;
@@ -1182,7 +1422,12 @@ public partial class Main : Node2D
         GD.Print($"[节拍] 弹出 {beat.Id} {beat.Name}（{beat.Options.Length} 个选项）");
     }
 
-    /// <summary>把选中那一项点亮。每次按键都重画，别指望控件自己会跳。</summary>
+    /// <summary>
+    /// 把选中那一项点亮。每次按键都重画，别指望控件自己会跳。
+    ///
+    /// 攻城那一拍里，「间」要官望够才走得通（design §8.6：间 = 内应）；
+    /// 走不通的项灰着，选中时底下那行直接说为什么——玩家不该按了回车才知道白按。
+    /// </summary>
     private void PaintChoice()
     {
         for (var i = 0; i < MaxOptions; i++)
@@ -1190,11 +1435,17 @@ public partial class Main : Node2D
             if (!_choiceItems[i].Visible) continue;
 
             var picked = i == _choiceSel;
+            var locked = TrustChoice.Locked(_trustBook, _choiceBeat, i);
+
             _choiceItems[i].Text = (picked ? "▸ " : "　 ") + _choiceText[i];
-            _choiceItems[i].AddThemeColorOverride("font_color", picked
-                ? new Color(0.96f, 0.82f, 0.48f, 0.98f)
-                : new Color(0.78f, 0.75f, 0.66f, 0.90f));
+            _choiceItems[i].AddThemeColorOverride("font_color", locked
+                ? new Color(0.46f, 0.44f, 0.40f, 0.58f)
+                : picked
+                    ? new Color(0.96f, 0.82f, 0.48f, 0.98f)
+                    : new Color(0.78f, 0.75f, 0.66f, 0.90f));
         }
+
+        _choiceFoot.Text = TrustChoice.RefusalFor(_trustBook, _choiceBeat, _choiceSel) ?? _choiceFootDefault;
     }
 
     /// <summary>确认这一项：置 <c>beat.&lt;id&gt;.pick.&lt;i&gt;</c>，完成这一拍，日子往前走。</summary>
@@ -1204,6 +1455,17 @@ public partial class Main : Node2D
 
         var beat = _choiceBeat;
         var index = PrologueBeats.NormalizePick(beat, _choiceSel);
+
+        // 攻城选「间」：内应门没开就走不通。面板不关，让他换个法子——
+        // 这一下要是被吞掉又不说话，玩家会以为按键失灵。
+        if (TrustChoice.Locked(_trustBook, beat, index))
+        {
+            GD.Print($"[信任] {beat.Id} 第 {index + 1} 项「{beat.Options[index]}」走不通：{TrustChoice.Refusal}");
+            PaintChoice();
+            _choiceFoot.Text = TrustChoice.Refusal;
+            return;
+        }
+
         var picked = beat.Options.Length > 0 && index < beat.Options.Length ? beat.Options[index] : "继续";
 
         var ok = _beats.Choose(beat, index);
@@ -1228,7 +1490,7 @@ public partial class Main : Node2D
         _choice.Visible = false;
 
         _hint.Visible = !_box.Visible;
-        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen;
+        if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _trustOpen;
 
         if (restoreTutorial) PaintTutorial();
     }
@@ -1363,6 +1625,9 @@ public partial class Main : Node2D
         // 反过来也不会错，但顺序写清楚，读档的人一眼能对上 S1-06 的语义表。
         _beats?.Machine.ToState(state);
 
+        // 三条轴写回现有的 Trust["prologue"]：形状不变、不加字段。
+        if (_trustBook is not null) TrustWiring.Store(state, _trustBook);
+
         var (ok, error) = _save.TrySave(state);
         if (!ok) GD.PushWarning($"[存档] 没写成功：{error}");
     }
@@ -1428,6 +1693,39 @@ public partial class Main : Node2D
 
         GD.Print($"写档 → 重读 → 有 {diffs.Count} 处差异");
         foreach (var d in diffs) GD.Print($"[存自检] 差：{d}");
+    }
+
+    /// <summary>
+    /// <c>--trust=&lt;id&gt;</c>：拿真表走一次 <see cref="TrustBook.Apply"/>，把 Explain 打出来。
+    ///
+    /// 这一趟只动内存：<c>_saveBlocked</c> 先立起来，绝不自检结果盖掉玩家那份档。
+    /// 无头时打一行就退（exit 0）；有窗口时留在画面上，方便 <c>--shot</c> 截到那条提示。
+    /// </summary>
+    /// <param name="id">trust.csv 的动作 id。</param>
+    private void RunTrustCheck(string id)
+    {
+        if (_trustBook is null || _trustTable is null)
+        {
+            GD.Print($"{TrustReport.Prefix} 没有信任表：trust.csv 读不进来。");
+            _exitCode = 1;
+            _quitAfterFrame = true;
+            return;
+        }
+
+        _saveBlocked = true;
+
+        var delta = ApplyTrust(id);
+        if (!delta.Applied)
+        {
+            GD.Print(TrustReport.UnknownLine(id));
+            _quitAfterFrame = true;
+            return;
+        }
+
+        if (_trustTable.TryGet(id, out var action) && action is not null)
+            GD.Print(TrustReport.ActionLine(action, TrustText.Toast(_trustBook, action, delta)));
+
+        if (DisplayServer.GetName() == "headless") _quitAfterFrame = true;
     }
 
     // ————————————————————————— 进度 —————————————————————————
@@ -1553,10 +1851,21 @@ public partial class Main : Node2D
         Style(_hint, 11, new Color(0.80f, 0.75f, 0.62f, 0.88f));
         ui.AddChild(_hint);
 
+        // 三轴变化的那一条：HUD 那行下面一点，字小一号，淡出后不占地方。
+        _trustToast = new Label
+        {
+            Position = new Vector2(216, 40),
+            Size = new Vector2(ViewW - 228, 16),
+            Visible = false,
+        };
+        Style(_trustToast, 10, new Color(0.90f, 0.80f, 0.56f, 0.96f));
+        ui.AddChild(_trustToast);
+
         BuildTextBox(ui);
         BuildHelp(ui);
         BuildChoice(ui);
         BuildBag(ui);
+        BuildTrust(ui);
 
         PaintTutorial();
         _help.Visible = false;
@@ -1620,8 +1929,8 @@ public partial class Main : Node2D
     {
         _help = new Panel
         {
-            Position = new Vector2(60, 46),
-            Size = new Vector2(520, 348),
+            Position = new Vector2(60, 40),
+            Size = new Vector2(520, 374),
         };
         _help.AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
@@ -1646,7 +1955,7 @@ public partial class Main : Node2D
         var body = new Label
         {
             Position = new Vector2(22, 50),
-            Size = new Vector2(478, 258),
+            Size = new Vector2(478, 284),
             Text =
                 "走　　W A S D ／ 方向键\n" +
                 "搜　　E 或空格：搜查 · 交谈 · 离开\n" +
@@ -1654,10 +1963,12 @@ public partial class Main : Node2D
                 "选　　1–4 挑一项，Enter（或 E）落下\n" +
                 "囊　　I：打开 / 关上；方向键选格，X 或 Del 丢一件\n" +
                 "示　　G：对话里把囊中之物给他看\n" +
+                "信　　Tab：官望 / 民望 / 疑心，和两条攻城路线\n" +
                 "关　　Esc：关掉这一页；什么都没开时打开这份说明\n\n" +
                 "· 黄框 ＝ 能按 E。紫框的东西，得先知道它是什么才看得见。\n" +
                 "· 囊只有十二格，没有仓库。装不下就丢一件，回来还能再搜。\n" +
                 "· 给别人看东西，他认不认、你事先知不知道，是两种反应。\n" +
+                "· 官望换内应开门，民望换民变开城——攻城时只能挑一扇。\n" +
                 "· 出口是黄框加一根黄箭头，走过去按 E。还有没看的地方，会先拦你一次。\n" +
                 "· 刻用完了不赶你走，只是天黑之前看不完了。\n" +
                 "· 顶上一行写着第几天、这一处叫什么、眼下该做什么、囊还剩几格。\n" +
@@ -1669,7 +1980,7 @@ public partial class Main : Node2D
 
         var foot = new Label
         {
-            Position = new Vector2(22, 312),
+            Position = new Vector2(22, 338),
             Size = new Vector2(478, 20),
             Text = "Esc / H　关掉",
         };
@@ -1837,6 +2148,138 @@ public partial class Main : Node2D
         };
         Style(_bagFoot, 10, new Color(0.60f, 0.56f, 0.47f, 0.88f));
         _bag.AddChild(_bagFoot);
+    }
+
+    /// <summary>
+    /// 「信任」面板：三条 0–100 的横条加两行攻城路线。
+    ///
+    /// 只有显示，没有可操作的东西——所以面板开着时按键只认 Tab / Esc，
+    /// 横条数值由 <see cref="PaintTrust"/> 现算，不在控件里存第二份。
+    /// </summary>
+    private void BuildTrust(CanvasLayer ui)
+    {
+        // 官望 秋褐、民望 墨青、疑心 朱砂：三条轴各有各的颜色，扫一眼就分得开。
+        Color[] ink =
+        {
+            new(0.80f, 0.62f, 0.34f, 0.96f),
+            new(0.44f, 0.63f, 0.57f, 0.96f),
+            new(0.72f, 0.32f, 0.26f, 0.96f),
+        };
+
+        _trust = new Panel
+        {
+            Position = new Vector2(96, 104),
+            Size = new Vector2(448, 252),
+            Visible = false,
+        };
+        _trust.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.048f, 0.052f, 0.050f, 0.97f),
+            BorderColor = new Color(0.62f, 0.48f, 0.28f, 0.92f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 1,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_trust);
+
+        _trustHead = new Label
+        {
+            Position = new Vector2(18, 12),
+            Size = new Vector2(220, 20),
+            Text = "信任",
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_trustHead, 13, new Color(0.96f, 0.90f, 0.72f));
+        _trust.AddChild(_trustHead);
+
+        var scale = new Label
+        {
+            Position = new Vector2(326, 12),
+            Size = new Vector2(100, 20),
+            Text = "0 – 100",
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(scale, 9, new Color(0.56f, 0.53f, 0.45f, 0.85f));
+        _trust.AddChild(scale);
+
+        for (var i = 0; i < _trustAxis.Length; i++)
+        {
+            var y = 46 + i * 38;
+
+            _trustAxis[i] = new Label
+            {
+                Position = new Vector2(18, y),
+                Size = new Vector2(56, 18),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(_trustAxis[i], 12, new Color(0.86f, 0.82f, 0.72f, 0.96f));
+            _trust.AddChild(_trustAxis[i]);
+
+            _trustTrack[i] = new Panel
+            {
+                Position = new Vector2(80, y + 4),
+                Size = new Vector2(236, 10),
+            };
+            _trustTrack[i].AddThemeStyleboxOverride("panel", new StyleBoxFlat
+            {
+                BgColor = new Color(0.10f, 0.11f, 0.10f, 0.90f),
+                BorderColor = new Color(0.30f, 0.28f, 0.23f, 0.85f),
+                BorderWidthTop = 1,
+                BorderWidthBottom = 1,
+                BorderWidthLeft = 1,
+                BorderWidthRight = 1,
+            });
+            _trust.AddChild(_trustTrack[i]);
+
+            _trustFill[i] = new Panel { Position = new Vector2(1, 1), Size = new Vector2(0, 8) };
+            _trustFill[i].AddThemeStyleboxOverride("panel", new StyleBoxFlat
+            {
+                BgColor = ink[i],
+                BorderWidthTop = 0,
+                BorderWidthBottom = 0,
+                BorderWidthLeft = 0,
+                BorderWidthRight = 0,
+            });
+            _trustTrack[i].AddChild(_trustFill[i]);
+
+            _trustValue[i] = new Label
+            {
+                Position = new Vector2(326, y),
+                Size = new Vector2(62, 18),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(_trustValue[i], 12, new Color(0.90f, 0.84f, 0.68f, 0.96f));
+            _trust.AddChild(_trustValue[i]);
+        }
+
+        for (var i = 0; i < _trustRoutes.Length; i++)
+        {
+            _trustRoutes[i] = new Label
+            {
+                Position = new Vector2(18, 168 + i * 22),
+                Size = new Vector2(412, 18),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visible = false,
+            };
+            Style(_trustRoutes[i], 11, new Color(0.66f, 0.63f, 0.55f, 0.82f));
+            _trust.AddChild(_trustRoutes[i]);
+        }
+
+        var foot = new Label
+        {
+            Position = new Vector2(18, 220),
+            Size = new Vector2(412, 16),
+            Text = "Tab / Esc 关上",
+        };
+        Style(foot, 9, new Color(0.58f, 0.55f, 0.46f, 0.85f));
+        _trust.AddChild(foot);
     }
 
     private void Style(Label l, int size, Color color)

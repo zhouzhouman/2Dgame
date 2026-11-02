@@ -11,6 +11,9 @@ Juhuo/.godot/
 .vs/
 .idea/
 Juhuo/shot.png
+# 调试截图（--shot / --shotbag / --shottrust 会往根目录和工程目录丢 png）
+shot_*.png
+Juhuo/shot_*.png
 Juhuo/build/
 *.log
 

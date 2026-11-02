@@ -304,6 +304,79 @@ public class TrustBookTests
         Assert.DoesNotContain('-', text);
     }
 
+    // ── 七之二、扣不动的部分也要说出来（票号 S1-01d）────────────────
+
+    [Fact]
+    public void 三轴见底时民望照样出现在提示里并标已见底()
+    {
+        // --trust=bribe 在新档（0/0/0）上：民望想 −3，实际一格都扣不动
+        var book = Book(State(0, 0, 0));
+
+        var delta = book.Apply("bribe");
+
+        Assert.Equal(0, delta.Min);                          // 实际没落下去
+        Assert.Equal(-3, delta.IntendedMin);                 // 表里想扣 3
+        Assert.Equal(4, delta.IntendedGuan);
+        Assert.Equal(1, delta.IntendedYi);
+        Assert.True(delta.WasClamped(TrustAxes.Min));
+        Assert.False(delta.WasClamped(TrustAxes.Guan));
+
+        var text = book.Explain(delta);
+        Assert.Contains("民望 \u22123（已见底）", text);
+        Assert.Equal("官望 +4  民望 \u22123（已见底）  疑心 +1", text);
+    }
+
+    [Fact]
+    public void 到顶时标的是那一条轴不是整条末尾()
+    {
+        var book = Book(State(100, 50, 5));
+
+        var delta = book.Apply("guanup");
+
+        Assert.True(delta.WasClamped(TrustAxes.Guan));
+        Assert.Equal(0, delta.Guan);                         // 一格都没进去
+        Assert.Equal("官望 +5（已到顶）", book.Explain(delta));
+    }
+
+    [Fact]
+    public void 两条轴各撞一个方向时各标各的()
+    {
+        // 官望顶格还要加、民望见底还要减：同一句话里两堵墙都得说清楚
+        var book = Book(State(100, 0, 5));
+
+        var delta = book.Apply("bribe");
+
+        Assert.Equal(TrustAxes.Guan | TrustAxes.Min, delta.ClampedAxes);
+        Assert.Equal("官望 +4（已到顶）  民望 \u22123（已见底）  疑心 +1", book.Explain(delta));
+    }
+
+    [Fact]
+    public void 没被钳时一个括号都不带()
+    {
+        var book = Book(State(10, 50, 5));
+
+        var delta = book.Apply("bribe");
+
+        Assert.Equal(TrustAxes.None, delta.ClampedAxes);
+        Assert.False(delta.Clamped);
+
+        var text = book.Explain(delta);
+        Assert.Equal("官望 +4  民望 \u22123  疑心 +1", text);
+        Assert.DoesNotContain("（", text);
+        Assert.DoesNotContain("）", text);
+    }
+
+    [Fact]
+    public void 未知动作仍是空串也不带括号()
+    {
+        var book = Book(State(0, 0, 0));
+
+        var delta = book.Apply("查无此action");
+
+        Assert.Equal(TrustAxes.None, delta.ClampedAxes);
+        Assert.Equal("", book.Explain(delta));
+    }
+
     // ── 八、坏表 ─────────────────────────────────────────────────
 
     [Fact]
