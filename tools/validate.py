@@ -27,6 +27,8 @@
     E14 siege.csv / recruit.csv 表结构、四法齐全、刻数/伤亡/民怨/天命区间、
         needs 只认四种写法、官望门槛与 routes.csv 对齐、打赢门槛 troops_needed 正整数、
         招兵三档与 trust 引用
+    E15 oaths.csv / realms.csv 表结构、id、誓约四件套非空、source 指得住一拍真选项、
+        国号四个且不许撞真实朝代
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -78,6 +80,13 @@
       这里是内容门，序章兵力就在几十的量级，四位数的门槛一定是写错了。
     * E14 的 recruit.option 对应 beats.csv b07 的 options 顺序（给粮|给承诺|抢兵器），
       三档各一行；trust 允许留空（承诺/抢夺的代价不落三轴），非空则必须在 trust.csv 里。
+    * E15 的 oaths.source 是「这张卡由哪一拍的哪个选项产生」，写法 `b07:1`（拍 id : 选项
+      序号，0 起）。序号必须落在该拍 options 的真实长度内：指向不存在的选项是硬错——那一拍的
+      选项玩家点不到，这张卡在整局里永远不会出现，而表里看着像有。options 为空的拍同理。
+    * E15 的誓约四件套是 §14.2 直给的结构：内容 / 受益者 / 期限 / 违约惩罚，缺一件这张卡
+      就立不住（兑现时不知道该赔给谁、赔多少）。故四列都非空，text 一并算进去。
+    * E15 不许用真实朝代名当国号（汉唐宋明清元），也不许用旧朝国号「晟」（世界观 §2.1：
+      国号大晟，都中州）。架空王朝顶着别人的国号，史官评语就没法写了。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -146,6 +155,14 @@ INSIDE_ROUTE_ID = "inside"                 # 官望门槛要对齐的那一行
 RECRUIT_COLS = ["option", "troops", "trust", "note"]
 RECRUIT_OPTIONS = ("0", "1", "2")          # b07：给粮 / 给承诺 / 抢兵器
 RECRUIT_TROOPS_MIN, RECRUIT_TROOPS_MAX = 10, 200
+
+# E15：誓约卡（§14.2 内容/受益者/期限/违约惩罚）+ 转段国号（§16.6 第 2 步）
+OATH_COLS = ["id", "text", "beneficiary", "deadline", "penalty", "source", "note"]
+REALM_COLS = ["id", "label", "motto", "note"]
+REALM_ROWS = 4                             # 转段时给玩家挑的国号备选数
+OATH_SOURCE = re.compile(r"^(b\d{2}):(\d{1,2})$")     # 拍 id : 选项序号（0 起）
+# 真实朝代名不许做国号；「晟」是旧朝国号（世界观 §2.1），同样不许
+REALM_FORBIDDEN_LABELS = {"汉", "唐", "宋", "明", "清", "元", "晟"}
 
 
 def need_kind(needs):
@@ -929,6 +946,118 @@ def check_siege_recruit(siege_path, recruit_path, routes_path, trust_path):
     return errors
 
 
+def check_oaths_realms(oaths_path, realms_path, beats_path):
+    """E15：誓约卡来源必须指得住一拍真选项；国号不许撞真实朝代。"""
+    errors = []
+
+    # —— 各拍的 options 长度：source 里的序号要落在这条区间里 ——
+    opt_count = {}
+    beats_ok = os.path.isfile(beats_path)
+    if beats_ok:
+        _, beat_rows = read_table(beats_path, BEATS_COLS)
+        for r in beat_rows:
+            bid = (r.get("id") or "").strip()
+            raw = (r.get("options") or "").strip()
+            opt_count[bid] = len([x for x in raw.split("|") if x.strip()])
+
+    if not os.path.isfile(oaths_path):
+        errors.append(Err("E15", "-", "oaths.csv", "-",
+                          "找不到 oaths.csv（誓约卡没处查）"))
+    else:
+        missing, rows = read_table(oaths_path, OATH_COLS)
+        if missing:
+            errors.append(Err("E15", "-", "oaths.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+        else:
+            if not rows:
+                errors.append(Err("E15", "-", "oaths.csv", "-",
+                                  "一行都没有（序章一句承诺都没留下，转段时沙盒里是空的）"))
+            seen = Counter()
+            for n, r in enumerate(rows, start=2):
+                oid = (r.get("id") or "").strip()
+                where = "第 %d 行" % n
+                seen[oid] += 1
+                who = "oath:" + (oid or where)
+
+                if not TRUST_ID.match(oid):
+                    errors.append(Err("E15", "oaths.csv", who, "-",
+                                      "id 应是小写英文+下划线（如 oath_pioneer），实际 %r" % oid))
+
+                for col, label in (("text", "内容"), ("beneficiary", "受益者"),
+                                   ("deadline", "期限"), ("penalty", "违约惩罚")):
+                    if not (r.get(col) or "").strip():
+                        errors.append(Err("E15", "oaths.csv", who, "-",
+                                          "%s（%s 列）为空——§14.2 的四件套缺一件这张卡就立不住"
+                                          % (label, col)))
+
+                src = (r.get("source") or "").strip()
+                m = OATH_SOURCE.match(src)
+                if not m:
+                    errors.append(Err("E15", "oaths.csv", who, "-",
+                                      "source=%r 应形如 b07:1（拍 id : 选项序号，0 起）" % src))
+                elif not beats_ok:
+                    errors.append(Err("E15", "oaths.csv", who, "-",
+                                      "找不到 beats.csv，source=%r 无从核对" % src))
+                else:
+                    bid, k = m.group(1), int(m.group(2))
+                    if bid not in opt_count:
+                        errors.append(Err("E15", "oaths.csv", who, "-",
+                                          "source 指向的拍 %s 不在 beats.csv" % bid))
+                    elif opt_count[bid] == 0:
+                        errors.append(Err("E15", "oaths.csv", who, "-",
+                                          "source 指向的 %s 没有 options（这一拍发不出承诺，"
+                                          "玩家永远拿不到这张卡）" % bid))
+                    elif k >= opt_count[bid]:
+                        errors.append(Err("E15", "oaths.csv", who, "-",
+                                          "source=%s 指向不存在的选项：%s 只有 %d 个选项（0..%d）"
+                                          % (src, bid, opt_count[bid], opt_count[bid] - 1)))
+
+            for oid, cnt in sorted(seen.items()):
+                if oid and cnt > 1:
+                    errors.append(Err("E15", "oaths.csv", "oath:" + oid, "-",
+                                      "id 重复（共 %d 条）" % cnt))
+
+    # —— realms.csv：转段时玩家挑的那几个国号 ——
+    if not os.path.isfile(realms_path):
+        errors.append(Err("E15", "-", "realms.csv", "-",
+                          "找不到 realms.csv（转段没国号可选）"))
+        return errors
+
+    missing, rows = read_table(realms_path, REALM_COLS)
+    if missing:
+        errors.append(Err("E15", "-", "realms.csv", "-", "表头缺列：%s" % ", ".join(missing)))
+        return errors
+
+    if len(rows) != REALM_ROWS:
+        errors.append(Err("E15", "-", "realms.csv", "-",
+                          "行数应为 %d 个国号备选，实际 %d" % (REALM_ROWS, len(rows))))
+
+    seen = Counter()
+    for n, r in enumerate(rows, start=2):
+        rid = (r.get("id") or "").strip()
+        label = (r.get("label") or "").strip()
+        where = "第 %d 行" % n
+        seen[rid] += 1
+        who = "realm:" + (rid or where)
+
+        if not TRUST_ID.match(rid):
+            errors.append(Err("E15", "realms.csv", who, "-",
+                              "id 应是小写英文+下划线，实际 %r" % rid))
+        if not label:
+            errors.append(Err("E15", "realms.csv", who, "-", "label（国号）为空"))
+        elif label in REALM_FORBIDDEN_LABELS:
+            errors.append(Err("E15", "realms.csv", who, "-",
+                              "国号 %r 与真实朝代（或旧朝「晟」）重名，"
+                              "架空王朝顶着别人的国号，士绅与史官都不认" % label))
+        if not (r.get("motto") or "").strip():
+            errors.append(Err("E15", "realms.csv", who, "-", "motto（年号/口号）为空"))
+
+    for rid, cnt in sorted(seen.items()):
+        if rid and cnt > 1:
+            errors.append(Err("E15", "realms.csv", "realm:" + rid, "-",
+                              "id 重复（共 %d 条）" % cnt))
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
@@ -1125,13 +1254,18 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
                                       os.path.join(data_dir, "routes.csv"),
                                       os.path.join(data_dir, "trust.csv")))
 
+    # —— E15 誓约卡 / 国号 ——
+    errors.extend(check_oaths_realms(os.path.join(data_dir, "oaths.csv"),
+                                     os.path.join(data_dir, "realms.csv"),
+                                     os.path.join(data_dir, "beats.csv")))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
-          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 两份 points 同源")
+          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -1300,6 +1434,28 @@ def _selftest_e14(tmp):
     return need_hit and trust_hit and troops_hit
 
 
+def _selftest_e15(tmp):
+    """E15 自测：source 指向不存在的选项 + 国号与真实朝代重名，两处都要报出。"""
+    _, oaths = read_table(os.path.join(DEFAULT_DATA, "oaths.csv"), OATH_COLS)
+    _, realms = read_table(os.path.join(DEFAULT_DATA, "realms.csv"), REALM_COLS)
+    beats_path = os.path.join(DEFAULT_DATA, "beats.csv")
+
+    bad_oaths = [dict(r) for r in oaths]
+    bad_oaths[0]["source"] = "b07:9"        # b07 只有 3 个选项（给粮/给承诺/抢兵器）
+    bad_realms = [dict(r) for r in realms]
+    bad_realms[0]["label"] = "唐"           # 真实朝代名，不许当国号
+
+    d = os.path.join(tmp, "e15")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "oaths.csv"), OATH_COLS, bad_oaths)
+    _write_csv(os.path.join(d, "realms.csv"), REALM_COLS, bad_realms)
+    msgs = [e.msg for e in check_oaths_realms(os.path.join(d, "oaths.csv"),
+                                             os.path.join(d, "realms.csv"), beats_path)]
+    src_hit = any("不存在的选项" in m for m in msgs)
+    name_hit = any("重名" in m for m in msgs)
+    return src_hit and name_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -1331,11 +1487,12 @@ def selftest():
 
         _write_csv(os.path.join(data_dir, "points.csv"), POINT_COLS, points)
         _write_csv(os.path.join(data_dir, "npcs.csv"), NPC_COLS, npcs)
-        # E11 / E12 / E13 / E14 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
+        # E11–E15 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
         for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS),
                            ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
                            ("shops.csv", SHOP_COLS), ("siege.csv", SIEGE_COLS),
-                           ("recruit.csv", RECRUIT_COLS)):
+                           ("recruit.csv", RECRUIT_COLS), ("oaths.csv", OATH_COLS),
+                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -1371,6 +1528,10 @@ def selftest():
             print("[selftest] 攻城四法/招兵 E14 未报出")
             return 1
         print("[selftest] 攻城四法/招兵 E14 1/1")
+        if not _selftest_e15(tmp):
+            print("[selftest] 誓约/国号 E15 未报出")
+            return 1
+        print("[selftest] 誓约/国号 E15 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -1385,7 +1546,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13/E14 各一处")
+                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13/E14/E15 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")

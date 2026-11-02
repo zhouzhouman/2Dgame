@@ -394,7 +394,7 @@ public class BeatMachineTests
     {
         var v2 = SaveState.FromJson("{\"version\":2,\"day\":7,\"flags\":{\"beat.b01.done\":true}}");
 
-        Assert.Equal(4, v2.Version);
+        Assert.Equal(5, v2.Version);
         Assert.False(v2.NeedsMigration);
         Assert.NotNull(v2.Prologue);
         Assert.Empty(v2.Prologue.BeatsDone);

@@ -12,8 +12,11 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class SaveState
 {
-    /// <summary>当前存档版本（schema v4：序章多了 prologue.troops 兵力）。</summary>
-    public const int CurrentVersion = 4;
+    /// <summary>
+    /// 当前存档版本（schema v5：序章多了 prologue.capital / realm / oaths / debts，
+    /// 即转段结算的四样东西）。
+    /// </summary>
+    public const int CurrentVersion = 5;
 
     /// <summary>还能读的最低版本（更早的按"需迁移"处理）。</summary>
     public const int MinVersion = 1;
@@ -128,6 +131,8 @@ public sealed class SaveState
 
         // v2 及更早没有 prologue 节：读进来就是"节拍一件没做"，这是可接受的降级（S1-06）。
         // v3 及更早没有 prologue.troops：读进来是 0，其余字段一个不动。
+        // v4 及更早没有 prologue.capital / realm / oaths / debts：读进来是空，其余字段一个不动
+        // （也就是"还没转过段"，说得通）。
         // 只升不降：比当前版本新的档保持原样，交给 IsTooNew 拒收。
         if (Version < CurrentVersion) Version = CurrentVersion;
 
@@ -150,7 +155,7 @@ public sealed class SaveState
 }
 
 /// <summary>
-/// 序章进度（schema v3 新增）。第几天复用顶层 <see cref="SaveState.Day"/>，这里只记节拍与兵力。
+/// 序章进度（schema v3 新增）。第几天复用顶层 <see cref="SaveState.Day"/>，这里只记节拍、兵力与转段结果。
 /// </summary>
 public sealed class PrologueState
 {
@@ -164,6 +169,20 @@ public sealed class PrologueState
     /// </summary>
     public int Troops { get; set; }
 
+    /// <summary>
+    /// 定都的空间 id（hub1–hub7）；空串 = 还没定都（schema v5 新增，v4 及更早读进来是空串）。
+    /// </summary>
+    public string Capital { get; set; } = "";
+
+    /// <summary>国号 id（realms.csv 的 id 列）；空串 = 还没定国号（schema v5 新增）。</summary>
+    public string Realm { get; set; } = "";
+
+    /// <summary>选作开国国策的誓约 id，最多 3 条（schema v5 新增）。</summary>
+    public List<string> Oaths { get; set; } = new();
+
+    /// <summary>没被选进国策、留到正篇按期限到期的誓约 id（schema v5 新增）。</summary>
+    public List<string> Debts { get; set; } = new();
+
     /// <summary>未知字段：保留并写回。</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; } = new();
@@ -173,6 +192,15 @@ public sealed class PrologueState
     {
         BeatsDone ??= new List<string>();
         BeatsDone.RemoveAll(string.IsNullOrEmpty);
+
+        Capital ??= "";
+        Realm ??= "";
+
+        Oaths ??= new List<string>();
+        Oaths.RemoveAll(string.IsNullOrEmpty);
+
+        Debts ??= new List<string>();
+        Debts.RemoveAll(string.IsNullOrEmpty);
     }
 }
 
