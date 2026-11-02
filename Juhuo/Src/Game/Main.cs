@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Godot;
@@ -100,14 +101,27 @@ public partial class Main : Node2D
     /// <summary>自检跑完自己退出（Q-001）。</summary>
     private bool _quitAfterFrame;
 
+    /// <summary>退出码：--playthrough 没走完时给 1，让 CI 一眼看见。</summary>
+    private int _exitCode;
+
+    /// <summary>这一局是通关跑批（不读不写玩家那份档）。</summary>
+    private bool _playthrough;
+
     public override void _Ready()
     {
         _save = new SaveService(GodotSaveFileSystem.Create());
 
+        var args = OS.GetCmdlineUserArgs();
+
+        // 开发辅助：--playthrough 一局打通十二拍。**不读不写玩家那份档**——
+        // 它只证明这条路走得完，不该把玩家的进度换成一份机器跑出来的。
+        // 这一句要在 LoadProgress 之前：进度文件也不能被跑批改掉。
+        _playthrough = args.Contains("--playthrough");
+        if (_playthrough) _saveBlocked = true;
+
         LoadProgress();
         BuildUi();
 
-        var args = OS.GetCmdlineUserArgs();
 
         try
         {
@@ -130,7 +144,9 @@ public partial class Main : Node2D
             _world.Knocked += OnKnocked;
 
             // 读档。坏档给一句人话，从新游戏开始——绝不崩、绝不白屏。
-            LoadSave();
+            // 通关跑批从第 1 天、0 拍起跑，旧档一律不认：不然跑出来的是玩家的进度。
+            if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
+            else LoadSave();
 
             // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
             // （S1-06 交接单的第二个坑：顺序写反，十二拍一起变 Locked）。
@@ -188,6 +204,23 @@ public partial class Main : Node2D
         // 开发辅助：--tutrun 把五步一次走完，验证引导真的推得动、进度真的落盘
         if (OS.GetCmdlineUserArgs().Contains("--tutrun") && _world is not null)
             RunTutorialOnce();
+
+        // 开发辅助：--playthrough 一局打通十二拍，把耗时摊开看，然后自己退出（S1-09）。
+        // 走的是真路径：换空间走出口、搜查按 E、选择按面板确认、敲门靠刻自己走到触发线。
+        if (_playthrough)
+        {
+            if (_world is not null && _beats is not null)
+            {
+                RunPlaythrough(args);
+            }
+            else
+            {
+                GD.Print("[通关] 初始化没完成（表读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
 
         // 开发辅助：--audit 逐关自检"有没有够不着的东西"，然后退出
         if (OS.GetCmdlineUserArgs().Contains("--audit") && _world is not null)
@@ -376,7 +409,7 @@ public partial class Main : Node2D
         if (_quitAfterFrame)
         {
             _quitAfterFrame = false;
-            GetTree().Quit();
+            GetTree().Quit(_exitCode);
             return;
         }
 
@@ -744,6 +777,11 @@ public partial class Main : Node2D
         UpdateChrome();
         RefreshHint();
         PaintTutorial();
+
+        // 读完这一页，这一处等着你的决定就该推上来了。
+        // 不然同一空间连着两拍（b05→b06、b08→b09、b11→b12）第二拍永远没机会弹——
+        // 而七个空间只能往前走，走回去是不可能的。
+        TryShowChoice();
     }
 
     private void ToggleHelp()
@@ -912,6 +950,10 @@ public partial class Main : Node2D
         UpdateChrome();
         SaveGame();
         SettleKnock();
+
+        // 同一空间里下一拍也是选择型（b05→b06、b11→b12）：进来那一刻弹过一次就不会再弹，
+        // 而玩家没有理由再"进一次"这个空间。这一拍落定之后立刻问下一拍。
+        TryShowChoice();
     }
 
     /// <summary>
@@ -1121,6 +1163,9 @@ public partial class Main : Node2D
 
     private void SaveProgress()
     {
+        // 通关跑批会把七个空间各走一遍（LastHub 一路变），别拿它去改玩家那份进度。
+        if (_playthrough) return;
+
         using var f = FileAccess.Open(ProgressPath, FileAccess.ModeFlags.Write);
         f?.StoreString(_progress.Serialize());
     }
@@ -1558,6 +1603,183 @@ public partial class Main : Node2D
         if (string.IsNullOrEmpty(text)) return "";
         var flat = text!.Replace("\n", " ");
         return flat.Length <= n ? flat : flat[..n] + "…";
+    }
+
+    // ————————————————————————— 通关跑批（S1-09） —————————————————————————
+
+    /// <summary>站到物件跟前时的候选格子：四正 + 四斜，和 <see cref="World.CanTouch"/> 同一个口径。</summary>
+    private static readonly (int Dx, int Dy)[] Around =
+    {
+        (0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1),
+    };
+
+    /// <summary>
+    /// --playthrough：从第 1 天、0 拍起，按表序把十二拍走完，打印每一拍的耗时并退出。
+    ///
+    /// 每一拍都走真实入口，不伪造内部状态：
+    /// · 换空间 = <see cref="OnExit"/>（和 --chain 同一条路）；
+    /// · 搜查 = <see cref="MapView.PressInteract"/>（玩家按 E 的那个方法）；
+    /// · 选择 = <see cref="ConfirmChoice"/>（面板回车）；
+    /// · 敲门 = 真实的刻消耗，让 <see cref="KnockTimer"/> 自己到点。
+    /// 落盘在 _Ready 一开头就用 _saveBlocked 拦掉了，跑完也不碰玩家的档。
+    /// </summary>
+    /// <param name="args">命令行参数（认 --pick=N）。</param>
+    private void RunPlaythrough(string[] args)
+    {
+        var options = PlaythroughOptions.Parse(args);
+
+        var result = ProloguePlaythrough.Run(
+            _beats!,
+            beat => PlayOneBeat(beat, options.Pick),
+            beat => (_world.KeUsedIn(beat.Hub), ClockTable.ForHub(beat.Hub) ?? 0));
+
+        foreach (var step in result.Steps)
+            GD.Print(ProloguePlaythrough.StepLine(step, result.Total));
+
+        if (!result.Ok) GD.Print(ProloguePlaythrough.FailureLine(result));
+
+        // 出门赶路的 2 刻记在离开的那一处，所以汇总要等全部走完再抄一遍账。
+        var used = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var hub in ClockTable.Hubs) used[hub] = _world.KeUsedIn(hub);
+
+        var budget = ProloguePlaythrough.Sum(used);
+        GD.Print(ProloguePlaythrough.TotalLine(result, budget));
+        GD.Print(ProloguePlaythrough.HubLine(budget));
+        GD.Print(ProloguePlaythrough.ConclusionLine(result));
+
+        if (!result.Ok) _exitCode = 1;
+    }
+
+    /// <summary>
+    /// 走一拍：先挪到这一拍的空间，再按它的触发方式走真实入口。
+    /// 返回 null = 这一拍做成了；返回一句话 = 为什么没成（跑批会停在这里）。
+    /// </summary>
+    private string? PlayOneBeat(Beat beat, int pick)
+    {
+        var walk = WalkTo(beat.Hub);
+        if (walk is not null) return walk;
+
+        return beat.Trigger switch
+        {
+            PrologueBeats.ChoiceTrigger => PlayChoiceBeat(beat, pick),
+            PrologueBeats.KnockTrigger => PlayKnockBeat(beat),
+            PrologueBeats.SearchTrigger => PlaySearchBeat(beat),
+            _ => $"不认识的触发方式「{beat.Trigger}」",
+        };
+    }
+
+    /// <summary>一关一关走到目标空间。走不到就说明白卡在哪一处。</summary>
+    private string? WalkTo(string hub)
+    {
+        for (var guard = 0; _world.Hub != hub; guard++)
+        {
+            if (guard > 8) return $"走不到 {hub}（卡在 {_world.Hub}）";
+
+            var from = _world.Hub;
+            OnExit();
+
+            if (string.Equals(_world.Hub, from, StringComparison.Ordinal))
+                return $"{from} 没有出口，走不到 {hub}";
+        }
+
+        return null;
+    }
+
+    /// <summary>选择型节拍：等面板弹出来（进空间时已经弹过一次），按 --pick 选中，再确认。</summary>
+    private string? PlayChoiceBeat(Beat beat, int pick)
+    {
+        if (!_choiceOpen) TryShowChoice();
+        if (!_choiceOpen || _choiceBeat is null) return "选项面板没有弹出来";
+
+        if (!string.Equals(_choiceBeat.Id, beat.Id, StringComparison.Ordinal))
+            return $"弹出的是 {_choiceBeat.Id}，不是 {beat.Id}";
+
+        _choiceSel = PrologueBeats.NormalizePick(beat, pick);
+        ConfirmChoice();
+
+        return _beats!.Machine.IsDone(beat) ? null : "确认之后这一拍没记上";
+    }
+
+    /// <summary>
+    /// 搜查型节拍：把人挪到点位旁边，按一次 E（<see cref="MapView.PressInteract"/> →
+    /// World.Search → Main.OnSearched），读完再按一次 E 关掉。
+    /// </summary>
+    private string? PlaySearchBeat(Beat beat)
+    {
+        var pointId = PrologueBeats.SearchPointOf(beat.Id);
+        if (pointId is null) return "这一拍没有指定点位";
+
+        var prop = _world.Props.FirstOrDefault(p => string.Equals(p.Point.Id, pointId, StringComparison.Ordinal));
+        if (prop is null) return $"搜不到点位 {pointId}";
+
+        if (!StandAt(prop, out var why)) return why;
+
+        _view!.PressInteract();
+        CloseIfOpen();
+
+        return _beats!.Machine.IsDone(beat) ? null : $"按了 E，{beat.Id} 没记上";
+    }
+
+    /// <summary>
+    /// 敲门型节拍：不碰 KnockTimer，靠真实的刻消耗等它自己到点——
+    /// 每翻一件东西记 1 刻，<see cref="World.CheckKnock"/> 到线就敲，Knocked 事件把这一拍记上。
+    /// </summary>
+    private string? PlayKnockBeat(Beat beat)
+    {
+        for (var guard = 0; !_beats!.Machine.IsDone(beat); guard++)
+        {
+            if (guard > 16) return $"翻到 {_world.KeUsed}/{_world.KeBudget} 刻，门还没响";
+
+            Interactable? target = null;
+            foreach (var p in _world.Props)
+            {
+                if (p.Point.IsKnowledge) continue;      // 知识门没开时按 E 不记账，会死循环
+                if (!StandAt(p, out _)) continue;
+                target = p;
+                break;
+            }
+
+            if (target is null) return "这一处没有站得到跟前的可翻之物";
+
+            _view!.PressInteract();
+            CloseIfOpen();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 站到这件东西跟前：挑一个走得过、按 E 真的能碰到它、而且不会被旁边的人截走的格子。
+    /// 站不下就说清楚是哪一件。
+    /// </summary>
+    private bool StandAt(Interactable prop, out string why)
+    {
+        var cx = Mathf.RoundToInt(prop.Cell.X);
+        var cy = Mathf.RoundToInt(prop.Cell.Y);
+
+        foreach (var (dx, dy) in Around)
+        {
+            var x = cx + dx;
+            var y = cy + dy;
+            if (!_world.Walkable(x, y)) continue;
+
+            _world.Player.Cell = new Vector2(x, y);
+            if (_world.Nearest()?.Point.Id != prop.Point.Id) continue;
+            if (_world.NearestSpeaker() is not null) continue;   // 人优先，会把东西挡掉
+
+            why = "";
+            return true;
+        }
+
+        why = $"点位 {prop.Point.Id} 旁边没有能站的地方";
+        return false;
+    }
+
+    /// <summary>对话框开着时，E 是"看完了"——和玩家按第二下 E 一样。</summary>
+    private void CloseIfOpen()
+    {
+        if (!_box.Visible) return;
+        _view!.PressInteract();
     }
 
     private async Task CaptureAndQuitAsync()

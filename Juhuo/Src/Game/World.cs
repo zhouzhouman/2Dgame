@@ -185,6 +185,14 @@ public sealed class World
     /// <summary>这一处的刻预算（Core 的 ClockTable 查出来的那份）。</summary>
     public int KeBudget => _clock.KeBudgetHalf / 2;
 
+    /// <summary>
+    /// 某个空间已经用了几刻。只给自检与通关脚本把七个空间摊开看——
+    /// 玩家眼前那一处仍然走 <see cref="KeUsed"/>，规则没有第二份。
+    /// </summary>
+    /// <param name="hub">空间 id。</param>
+    /// <returns>已用整刻；没进过的空间是 0。</returns>
+    public int KeUsedIn(string hub) => _clocks.TryGetValue(hub, out var clock) ? clock.KeUsedKe : 0;
+
     /// <summary>还剩几刻。</summary>
     public int KeLeft => _clock.KeLeftKe;
 

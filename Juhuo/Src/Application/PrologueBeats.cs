@@ -46,6 +46,15 @@ public sealed class PrologueBeats
     /// <summary>中文序号 ①–⑫，与表里的位置一一对应；超出就退回阿拉伯数字。</summary>
     private const string Circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫";
 
+    /// <summary>
+    /// search 拍认的那个点位 id（没有指定点位返回 null）。
+    /// 通关脚本要按同一份对应关系把玩家挪到点位旁边，不能再抄一遍 <see cref="SearchKeys"/>。
+    /// </summary>
+    /// <param name="beatId">节拍 id。</param>
+    /// <returns>点位 id 或 null。</returns>
+    public static string? SearchPointOf(string? beatId)
+        => !string.IsNullOrEmpty(beatId) && SearchKeys.TryGetValue(beatId, out var key) ? key : null;
+
     private readonly BeatTable _table;
     private readonly BeatMachine _machine;
     private readonly FlagStore _flags;

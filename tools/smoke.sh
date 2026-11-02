@@ -112,6 +112,17 @@ if [ "$FAST" = "0" ]; then
     echo "$out" | tail -1
     echo "$out" | grep -q "完成"
   }
+  playthrough() {
+    local out rc
+    out="$("$GODOT" --headless --path Juhuo -- --playthrough 2>&1)"; rc=$?
+    echo "$out" | grep -E "^\[通关\] (合计|结论)"
+    # 必须 12/12 且 exit 0；只看其中一句会被"可以通关"骗过（当年可达性就吃过一次假绿）
+    [ "$rc" -eq 0 ] || return 1
+    echo "$out" | grep -qE "合计：12/12 拍" || return 1
+    echo "$out" | grep -q "结论：可以通关"
+  }
+  step "序章自动通关（十二拍走完）" playthrough || true
+
   step "引导五步" tutrun || true
 
   savetest() {
