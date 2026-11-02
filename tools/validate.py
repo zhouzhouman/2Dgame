@@ -23,6 +23,7 @@
     E10 beats.csv 结构错（行数 / id / day / hub / requires / sets 旗标名 / trigger）
     E11 items.csv / gifts.csv 表结构、loot 覆盖、引用与旗标名
     E12 trust.csv / routes.csv 表结构、id、三轴取值（−10..10 整数）、路线轴与阈值、三轴全 0
+    E13 shops.csv 表结构、shop 取值、item 引用、价与存量、同物黑市价 ≤ 官市价
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -53,6 +54,13 @@
       这是"数据必须有后果"的底线，CANON §2 第 12 条。
     * E12 的 routes.axis 只认 guan / min：疑心不是攻城路线，写进来就是设计错。
       阈值 1..100 与 0–100 的轴同量纲。
+    * E13 的 price 单位是文（1 贯 = 1000 文），整数且为正；stock 是这一趟能买的份数，1..20。
+      序章买的是"一升/一尺/一包"这种小份，与文档的"贯/石、贯/斤"不是同一分母，
+      折算系数必须写在 note 里，否则这条价格无从复核。
+    * E13 要求同一件物品的黑市价 ≤ 官市价（设计文档 §5.2：官市 ×1.2、黑市 ×0.75）。
+      反过来写就是数据错，不是设计选择。
+    * E13 还要求 official / black 各至少一行，且至少一件物品两边都卖——两边都卖的那一件
+      是玩家能直接看见"官市贵、黑市贱"的唯一证据，没有它这一课就教不出来。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -96,6 +104,12 @@ TRUST_AXES = ("guan", "min", "yi")
 TRUST_DELTA_MIN, TRUST_DELTA_MAX = -10, 10        # 单次变化量的上下限
 ROUTE_AXES = ("guan", "min")                      # 内应开门 / 民变开城，疑心不是路线
 TRUST_ID = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+
+# E13：官市 / 黑市货架（手维护表）
+SHOP_COLS = ["shop", "item", "price", "stock", "note"]
+SHOP_NAMES = ("official", "black")                 # 官市 / 黑市
+STOCK_MIN, STOCK_MAX = 1, 20                      # 这一趟能买的份数
+MARKET_TRUST_IDS = ("market_official", "market_black")   # §5.2 两条交易后果必须有行
 
 # 文档/校对用的那一份（生成器写；与游戏读的那份同源）
 DOC_CSV = os.path.join(ROOT, "举火_序章数据_全关卡_v1.1.csv")
@@ -636,6 +650,86 @@ def check_trust_routes(trust_path, routes_path):
     return errors
 
 
+def check_shops(shops_path, items_path, trust_path):
+    """E13：官市/黑市货架。价与量、引用、以及"黑市不许比官市贵"。"""
+    errors = []
+    if not os.path.isfile(shops_path):
+        return [Err("E13", "-", "shops.csv", "-",
+                    "找不到 shops.csv（官市/黑市就没货可卖）")]
+
+    missing, rows = read_table(shops_path, SHOP_COLS)
+    if missing:
+        return [Err("E13", "-", "shops.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    item_ids = set()
+    if os.path.isfile(items_path):
+        _, items = read_table(items_path, ITEM_COLS)
+        item_ids = {(r.get("id") or "").strip() for r in items}
+        item_ids.discard("")
+
+    price_of = {}          # (shop, item) -> 文
+    for n, r in enumerate(rows, start=2):
+        shop = (r.get("shop") or "").strip()
+        iid = (r.get("item") or "").strip()
+        where = "第 %d 行" % n
+        who = "%s:%s" % (shop or where, iid or "?")
+
+        if shop not in SHOP_NAMES:
+            errors.append(Err("E13", "-", who, "-",
+                              "shop=%r 只能是 %s" % (shop, " / ".join(SHOP_NAMES))))
+        if item_ids and iid not in item_ids:
+            errors.append(Err("E13", "-", who, "-",
+                              "item %r 不在 items.csv（货架上没有的东西卖不出去）" % iid))
+
+        price, why = parse_coord(r.get("price"))
+        if why:
+            errors.append(Err("E13", "-", who, "-", "price %s（单位是文，整数）" % why))
+        elif price <= 0:
+            errors.append(Err("E13", "-", who, "-", "price=%d 应为正整数文" % price))
+        else:
+            price_of[(shop, iid)] = price
+
+        stock, swhy = parse_coord(r.get("stock"))
+        if swhy:
+            errors.append(Err("E13", "-", who, "-", "stock %s（这一趟能买的份数，整数）" % swhy))
+        elif not STOCK_MIN <= stock <= STOCK_MAX:
+            errors.append(Err("E13", "-", who, "-",
+                              "stock=%d 应在 %d..%d" % (stock, STOCK_MIN, STOCK_MAX)))
+
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E13", "-", who, "-",
+                              "note 为空（折算系数要写在这里，否则价格无从复核）"))
+
+    official = {(s, i) for s, i in price_of if s == "official"}
+    black = {(s, i) for s, i in price_of if s == "black"}
+    if not official:
+        errors.append(Err("E13", "-", "shops.csv", "-", "官市一行都没有"))
+    if not black:
+        errors.append(Err("E13", "-", "shops.csv", "-", "黑市一行都没有"))
+
+    both = {i for _, i in official} & {i for _, i in black}
+    if official and black and not both:
+        errors.append(Err("E13", "-", "shops.csv", "-",
+                          "官市与黑市没有共同卖的物品（玩家看不见两边的价差）"))
+
+    for iid in sorted(both):
+        po, pb = price_of[("official", iid)], price_of[("black", iid)]
+        if pb > po:
+            errors.append(Err("E13", "-", "%s:%s" % ("black", iid), "-",
+                              "黑市价 %d 文高于官市价 %d 文（§5.2：官市 ×1.2、黑市 ×0.75，"
+                              "黑市只许更贱）" % (pb, po)))
+
+    if os.path.isfile(trust_path):
+        _, trust = read_table(trust_path, TRUST_COLS)
+        have = {(r.get("id") or "").strip() for r in trust}
+        for tid in MARKET_TRUST_IDS:
+            if tid not in have:
+                errors.append(Err("E13", "-", "trust.csv", "-",
+                                  "缺 %s 一行（§5.2 的交易后果没处挂）" % tid))
+
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
@@ -821,13 +915,18 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     errors.extend(check_trust_routes(os.path.join(data_dir, "trust.csv"),
                                      os.path.join(data_dir, "routes.csv")))
 
+    # —— E13 官市 / 黑市货架 ——
+    errors.extend(check_shops(os.path.join(data_dir, "shops.csv"),
+                              os.path.join(data_dir, "items.csv"),
+                              os.path.join(data_dir, "trust.csv")))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
-          "信任轴/路线 + 两份 points 同源")
+          "信任轴/路线 + 官市/黑市 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -941,6 +1040,30 @@ def _selftest_e12(tmp):
     return zero_hit and axis_hit
 
 
+def _selftest_e13(tmp):
+    """E13 自测：黑市比官市贵 + 卖 items.csv 里没有的东西，两处都必须报出。"""
+    items_path = os.path.join(DEFAULT_DATA, "items.csv")
+    trust_path = os.path.join(DEFAULT_DATA, "trust.csv")
+    _, shops = read_table(os.path.join(DEFAULT_DATA, "shops.csv"), SHOP_COLS)
+
+    bad = [dict(r) for r in shops]
+    for r in bad:                      # 同一件物品：黑市改到比官市还贵
+        if r["shop"] == "official" and r["item"] == "grain":
+            r["price"] = "6"
+        if r["shop"] == "black" and r["item"] == "grain":
+            r["price"] = "9"
+    bad.append({"shop": "black", "item": "ghost_item", "price": "10",
+                "stock": "3", "note": "坏样本：items.csv 里没有这件东西"})
+
+    d = os.path.join(tmp, "e13")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "shops.csv"), SHOP_COLS, bad)
+    msgs = [e.msg for e in check_shops(os.path.join(d, "shops.csv"), items_path, trust_path)]
+    dearer_hit = any("高于官市价" in m for m in msgs)
+    ghost_hit = any("不在 items.csv" in m for m in msgs)
+    return dearer_hit and ghost_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -972,9 +1095,10 @@ def selftest():
 
         _write_csv(os.path.join(data_dir, "points.csv"), POINT_COLS, points)
         _write_csv(os.path.join(data_dir, "npcs.csv"), NPC_COLS, npcs)
-        # E11 / E12 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
+        # E11 / E12 / E13 的表照抄真表：这一轮只验 E01–E05，别让别的红点混进来
         for name, cols in (("items.csv", ITEM_COLS), ("gifts.csv", GIFT_COLS),
-                           ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS)):
+                           ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
+                           ("shops.csv", SHOP_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -1002,6 +1126,10 @@ def selftest():
             print("[selftest] 信任轴/路线 E12 未报出")
             return 1
         print("[selftest] 信任轴/路线 E12 1/1")
+        if not _selftest_e13(tmp):
+            print("[selftest] 官市/黑市 E13 未报出")
+            return 1
+        print("[selftest] 官市/黑市 E13 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -1016,7 +1144,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12 各一处")
+                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")

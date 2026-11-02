@@ -297,7 +297,11 @@ public class GameTrustTests
         Assert.NotNull(path);
 
         var table = TrustTable.Load(path!);
-        Assert.Equal(9, table.Count);
+        // 不写死条数：表会随着系统接入变长（S2-02 就加了两条市场动作），
+        // 写死会让学生每次加数据都红一次，而它想守的其实是"别把已有动作删了"。
+        Assert.True(table.Count >= 9, $"信任动作只剩 {table.Count} 条，比 S1-01 的 9 条还少");
+        Assert.True(table.TryGet("market_official", out _), "官市交易那条市场动作没了");
+        Assert.True(table.TryGet("market_black", out _), "黑市交易那条市场动作没了");
         Assert.True(table.TryGet(id, out var action));
 
         Assert.Equal(guan, action!.Guan);
