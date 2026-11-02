@@ -20,6 +20,7 @@ namespace Juhuo;
 ///   Ctrl（按住）   把当前场景所有可交互物框出来
 ///   I              打开 / 关上囊（12 格）
 ///   G              对话里把囊中之物给他看
+///   T              对话里跟商人买卖（布商 = 官市，掮客 = 黑市）
 ///   Esc            关掉对话；什么都没开时打开操作说明
 ///   H              操作说明
 ///
@@ -136,6 +137,35 @@ public partial class Main : Node2D
     private readonly Label[] _trustRoutes = new Label[4];
     private bool _trustOpen;
 
+    // —— 买卖（S2-02c）——
+    /// <summary>货架表（shops.csv）。</summary>
+    private ShopTable _shopTable = default!;
+
+    /// <summary>这一趟的买卖账；存货跟着它走，不随面板开关重置。</summary>
+    private TradeBook? _trade;
+
+    /// <summary>现在开着的那张柜台。</summary>
+    private ShopScreen? _shopScreen;
+
+    /// <summary>交易面板是可操作的面板，开着时键盘只归它。</summary>
+    private Panel _shop = default!;
+    private Label _shopHead = default!;
+    private Label _shopMoney = default!;
+    private Label _shopGate = default!;
+    private Label _shopMsg = default!;
+    private Label _shopFoot = default!;
+
+    /// <summary>面板一次放得下几行；多出来的靠 <see cref="_shopTop"/> 滚。</summary>
+    private const int ShopVisibleRows = 8;
+
+    private readonly Label[] _shopRows = new Label[ShopVisibleRows];
+    private int _shopTop;
+    private bool _shopOpen;
+    private bool _shopFromBox;
+
+    /// <summary>这一局是 <c>--shop</c> 自检（同样不碰玩家那份档）。</summary>
+    private bool _shopRun;
+
     /// <summary>提示停留多久之后开始淡出（秒）。</summary>
     private const float ToastHold = 2f;
 
@@ -191,6 +221,10 @@ public partial class Main : Node2D
         _bagRun = args.Contains("--bag");
         if (_bagRun) _saveBlocked = true;
 
+        // --shop 只走内存里的一百文，别拿它改玩家的钱与信任。
+        _shopRun = args.Contains("--shop");
+        if (_shopRun) _saveBlocked = true;
+
         LoadProgress();
         BuildUi();
 
@@ -219,6 +253,9 @@ public partial class Main : Node2D
             _trustTable = TrustTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/trust.csv"));
             _routeTable = RouteTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/routes.csv"));
 
+            // 货架（S2-02c）：价钱与存货在表里，买卖规则在 TradeBook，面板在 Application
+            _shopTable = ShopTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/shops.csv"));
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
@@ -229,13 +266,19 @@ public partial class Main : Node2D
             // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
-            else LoadSave();
+            else if (!_shopRun) LoadSave();
 
             // 三轴只在存档里存一份：这里拿到的就是 SaveState.Trust["prologue"] 那个对象，
             // 账本就地改它，SaveGame 再原样交回去。没有条目时用存档默认值，不自己设初值。
             _trustBook = new TrustBook(TrustWiring.Restore(_loadedState), _trustTable, _routeTable);
             GD.Print($"[信任] 官望 {_trustBook.State.Guan} 民望 {_trustBook.State.Min} 疑心 {_trustBook.State.Yi}，"
                      + $"路线 {_trustBook.OpenRoutes().Count}/{_routeTable.Count} 开着");
+
+            // 买卖账：只改囊、不改信任；路引旗标按当前所在的 hub 问。
+            // 存货跟着这一本走——关掉面板再打开，卖掉的货不会又长回来。
+            _trade = new TradeBook(
+                _shopTable, _world.Bag, _items, _trustBook.State,
+                name => _world.Flags.Has(name, _world.Hub));
 
             // 节拍必须在读档之后造：旗标要先进 FlagStore，requires 才判得对
             // （S1-06 交接单的第二个坑：顺序写反，十二拍一起变 Locked）。
@@ -427,6 +470,23 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
         }
 
+        // 开发辅助：--shop 打印两边货架、各买一升粮、再撞一次门槛，然后退出（S2-02c）
+        if (_shopRun)
+        {
+            if (_shopTable is not null && _items is not null && _trustTable is not null && _routeTable is not null)
+            {
+                foreach (var line in ShopDemo.Run(_shopTable, _items, _trustTable, _routeTable))
+                    GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{ShopReport.Prefix} 初始化没完成（shops.csv / items.csv / trust.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
         if (OS.GetCmdlineUserArgs().Contains("--demo") && _world is not null)
             RunDemo();
 
@@ -515,6 +575,18 @@ public partial class Main : Node2D
             OpenTrust();
             _ = CaptureAndQuitAsync();
         }
+        else if (args.Contains("--shotshop"))
+        {
+            // 只为截图：借四十文看柜台，绝不落盘（玩家那份档还是原样）
+            _saveBlocked = true;
+            CloseChoice(restoreTutorial: false);
+            if (_world is not null) _world.Bag.TryAdd(TradeBook.MoneyItem, 40, _items!, out _);
+            // 塞完钱要刷一次 HUD：囊计数是"事件推"的，直接改背包没人通知它，
+            // 截图里就会出「囊中铜钱 40」配「囊 0/12」这种自相矛盾（实测踩过）。
+            UpdateChrome();
+            OpenShop(ShopTable.Official);
+            _ = CaptureAndQuitAsync();
+        }
         else if (args.Contains("--shot"))
         {
             _ = CaptureAndQuitAsync();
@@ -563,6 +635,13 @@ public partial class Main : Node2D
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
 
+        // 柜台开着时，键盘归它：↑↓ 选行、Enter 成交、Tab 换块、Esc / T 关上。
+        if (_shopOpen)
+        {
+            HandleShopKey(k.Keycode);
+            return;
+        }
+
         // 「信任」面板开着时，键盘归它：Tab / Esc 关上，别的键什么都不做
         // （走动与 E 由 MapView 的 UiBlocking 拦住，这里只需要别再分发）。
         if (_trustOpen)
@@ -593,6 +672,10 @@ public partial class Main : Node2D
 
             case Key.G:
                 OpenGiftPanel();
+                break;
+
+            case Key.T:
+                ToggleShop();
                 break;
 
             case Key.Tab:
@@ -1347,6 +1430,189 @@ public partial class Main : Node2D
         }
     }
 
+    // ————————————————————————— 买卖 —————————————————————————
+
+    /// <summary>
+    /// T：跟身边的商人做买卖。布商守官市、掮客守黑市（<see cref="ShopWiring"/>）。
+    ///
+    /// 只有正在跟人说话时才开：柜台是从对话里推开的，不是凭空站在街上按一下就有。
+    /// 旁边没商人也得说话——不然玩家会以为 T 坏了。
+    /// </summary>
+    private void ToggleShop()
+    {
+        if (_shopOpen)
+        {
+            CloseShop(restoreBox: true);
+            return;
+        }
+
+        if (_trade is null || _trustBook is null || _shopTable is null) return;
+
+        var who = _box.Visible ? _world?.NearestSpeaker() : null;
+        var shop = ShopWiring.ShopOf(who?.Name);
+
+        if (shop is null || who is null)
+        {
+            SetHint(ShopWiring.NoMerchantText, 3f);
+            return;
+        }
+
+        OpenShop(shop);
+    }
+
+    /// <summary>推开柜台：对话先收起来（关柜台时还回去），走动与 E 一并停住。</summary>
+    /// <param name="shop">official 或 black。</param>
+    private void OpenShop(string shop)
+    {
+        if (_trade is null || _trustBook is null || _world is null) return;
+
+        _shopScreen = new ShopScreen(_shopTable, _trade, _world.Bag, _items, _trustBook, shop);
+        _shopFromBox = _box.Visible;
+        _shopOpen = true;
+        _shopTop = 0;
+
+        if (_shopFromBox) _box.Visible = false;
+
+        _hint.Visible = false;
+        _tutPanel.Visible = false;
+        _shop.Visible = true;
+
+        if (_view is not null) _view.UiBlocking = true;
+
+        PaintShop();
+    }
+
+    /// <summary>关柜台。从对话里点开的就还回对话，别让玩家关完发现自己站在街上。</summary>
+    /// <param name="restoreBox">把先前那页对话还回去。</param>
+    private void CloseShop(bool restoreBox)
+    {
+        if (!_shopOpen) return;
+
+        _shopOpen = false;
+        _shop.Visible = false;
+        _shopScreen = null;
+
+        if (restoreBox && _shopFromBox)
+        {
+            _box.Visible = true;
+            if (_view is not null) _view.SetBoxOpen(true);
+        }
+
+        _shopFromBox = false;
+
+        if (_view is not null)
+        {
+            if (!_box.Visible) _view.SetBoxOpen(false);
+            _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _bagOpen || _trustOpen;
+        }
+
+        _hint.Visible = !_box.Visible;
+        RefreshHint();
+        PaintTutorial();
+        UpdateChrome();
+    }
+
+    /// <summary>柜台开着时的键盘。E 也能成交——对话框一直用 E，手指不必换地方。</summary>
+    private void HandleShopKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Up or Key.W:
+                MoveShop(-1);
+                break;
+
+            case Key.Down or Key.S:
+                MoveShop(1);
+                break;
+
+            case Key.Tab:
+                _shopScreen?.ToggleMode();
+                _shopTop = 0;
+                PaintShop();
+                break;
+
+            case Key.Enter or Key.KpEnter or Key.E or Key.Space:
+                ConfirmShop();
+                break;
+
+            case Key.Escape or Key.T:
+                CloseShop(restoreBox: true);
+                break;
+        }
+    }
+
+    private void MoveShop(int delta)
+    {
+        if (_shopScreen is null) return;
+        _shopScreen.Move(delta);
+        PaintShop();
+    }
+
+    /// <summary>
+    /// 成交一件。成功的账由面板算（它拿 Core 的结果去加信任），
+    /// 这里只管把那一句信任提示亮起来、把档落下去。
+    /// </summary>
+    private void ConfirmShop()
+    {
+        if (_shopScreen is null) return;
+
+        var result = _shopScreen.Confirm();
+        if (result is { Ok: true })
+        {
+            ShowTrustToast(_shopScreen.LastToast);
+            UpdateChrome();
+            SaveGame();
+        }
+
+        PaintShop();
+    }
+
+    /// <summary>把柜台重画一遍：买 / 卖两块、选中那行点灯、失败的话原样贴在底下。</summary>
+    private void PaintShop()
+    {
+        if (_shopScreen is null) return;
+
+        _shopHead.Text = _shopScreen.HeadLine;
+        _shopMoney.Text = _shopScreen.MoneyLine;
+        _shopGate.Text = _shopScreen.ThresholdLine;
+        _shopFoot.Text = _shopScreen.FootLine;
+
+        var rows = _shopScreen.Rows();
+        var sel = _shopScreen.Selected;
+
+        // 选中行滚进视野：八行之外的东西不是丢了，只是要按 ↓ 才看得到。
+        if (sel < _shopTop) _shopTop = sel;
+        if (sel >= _shopTop + ShopVisibleRows) _shopTop = sel - ShopVisibleRows + 1;
+        _shopTop = Math.Clamp(_shopTop, 0, Math.Max(0, rows.Count - ShopVisibleRows));
+
+        for (var i = 0; i < _shopRows.Length; i++)
+        {
+            var at = _shopTop + i;
+            var label = _shopRows[i];
+
+            if (at >= rows.Count)
+            {
+                label.Text = "";
+                continue;
+            }
+
+            var row = rows[at];
+            var picked = at == sel;
+
+            label.Text = (picked ? "▸ " : "　 ") + row.Label;
+            label.AddThemeColorOverride("font_color", picked
+                ? new Color(0.96f, 0.82f, 0.48f, 0.99f)
+                : row.Sellable
+                    ? new Color(0.84f, 0.81f, 0.73f, 0.94f)
+                    : new Color(0.56f, 0.53f, 0.46f, 0.72f));
+        }
+
+        _shopMsg.Text = _shopScreen.Message;
+        _shopMsg.AddThemeColorOverride("font_color", _shopScreen.LastResult is { Ok: false }
+            ? new Color(0.84f, 0.46f, 0.36f, 0.98f)
+            : new Color(0.86f, 0.76f, 0.52f, 0.96f));
+    }
+
     // ————————————————————————— 十二节拍 —————————————————————————
 
     /// <summary>
@@ -1364,6 +1630,9 @@ public partial class Main : Node2D
 
         // 「信任」面板同理。
         if (_trustOpen) return;
+
+        // 柜台也压在上面：这时候推一张决断上来，键盘会被两层抢。
+        if (_shopOpen) return;
 
         var beat = _beats.PendingChoice(_world.Hub);
         if (beat is null) return;
@@ -1866,6 +2135,7 @@ public partial class Main : Node2D
         BuildChoice(ui);
         BuildBag(ui);
         BuildTrust(ui);
+        BuildShop(ui);
 
         PaintTutorial();
         _help.Visible = false;
@@ -1962,7 +2232,7 @@ public partial class Main : Node2D
                 "看　　按住 Ctrl：把这一处能碰的东西全框出来\n" +
                 "选　　1–4 挑一项，Enter（或 E）落下\n" +
                 "囊　　I：打开 / 关上；方向键选格，X 或 Del 丢一件\n" +
-                "示　　G：对话里把囊中之物给他看\n" +
+                "示　　G：对话里把囊中之物给他看；T：跟商人买卖\n" +
                 "信　　Tab：官望 / 民望 / 疑心，和两条攻城路线\n" +
                 "关　　Esc：关掉这一页；什么都没开时打开这份说明\n\n" +
                 "· 黄框 ＝ 能按 E。紫框的东西，得先知道它是什么才看得见。\n" +
@@ -2280,6 +2550,104 @@ public partial class Main : Node2D
         };
         Style(foot, 9, new Color(0.58f, 0.55f, 0.46f, 0.85f));
         _trust.AddChild(foot);
+    }
+
+    /// <summary>
+    /// 柜台：上半买、下半卖，用 Tab 换块。每行一句"名字 ×数量 单价 n 文"，
+    /// 顶部写囊中铜钱与官市门槛，底部留给成交结果 / 失败原因。
+    ///
+    /// 只有显示，账在 <see cref="ShopScreen"/>：面板不存第二份钱数，
+    /// 每次重画都从囊里现取——否则卖掉一件之后抬头还挂着旧数，最难解释。
+    /// </summary>
+    private void BuildShop(CanvasLayer ui)
+    {
+        _shop = new Panel
+        {
+            Position = new Vector2(64, 66),
+            Size = new Vector2(512, 312),
+            Visible = false,
+        };
+        _shop.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.050f, 0.054f, 0.050f, 0.97f),
+            BorderColor = new Color(0.72f, 0.56f, 0.30f, 0.94f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 2,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_shop);
+
+        _shopHead = new Label
+        {
+            Position = new Vector2(18, 10),
+            Size = new Vector2(280, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_shopHead, 13, new Color(0.96f, 0.90f, 0.72f));
+        _shop.AddChild(_shopHead);
+
+        _shopMoney = new Label
+        {
+            Position = new Vector2(320, 10),
+            Size = new Vector2(172, 20),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_shopMoney, 12, new Color(0.86f, 0.76f, 0.52f, 0.95f));
+        _shop.AddChild(_shopMoney);
+
+        _shopGate = new Label
+        {
+            Position = new Vector2(18, 32),
+            Size = new Vector2(476, 18),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_shopGate, 10, new Color(0.74f, 0.70f, 0.60f, 0.92f));
+        _shop.AddChild(_shopGate);
+
+        var rule = new Label
+        {
+            Position = new Vector2(18, 52),
+            Size = new Vector2(476, 10),
+            Text = "—————",
+        };
+        Style(rule, 9, new Color(0.48f, 0.40f, 0.28f, 0.90f));
+        _shop.AddChild(rule);
+
+        for (var i = 0; i < _shopRows.Length; i++)
+        {
+            _shopRows[i] = new Label
+            {
+                Position = new Vector2(18, 64 + i * 24),
+                Size = new Vector2(476, 22),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(_shopRows[i], 12, new Color(0.84f, 0.81f, 0.73f, 0.94f));
+            _shop.AddChild(_shopRows[i]);
+        }
+
+        _shopMsg = new Label
+        {
+            Position = new Vector2(18, 258),
+            Size = new Vector2(476, 18),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_shopMsg, 10, new Color(0.86f, 0.76f, 0.52f, 0.96f));
+        _shop.AddChild(_shopMsg);
+
+        _shopFoot = new Label
+        {
+            Position = new Vector2(18, 280),
+            Size = new Vector2(476, 16),
+            Text = "↑↓ 选行　·　Enter 买卖　·　Tab 切买 / 卖　·　Esc / T 关上",
+        };
+        Style(_shopFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.88f));
+        _shop.AddChild(_shopFoot);
     }
 
     private void Style(Label l, int size, Color color)

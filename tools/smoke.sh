@@ -123,6 +123,17 @@ if [ "$FAST" = "0" ]; then
   }
   step "序章自动通关（十二拍走完）" playthrough || true
 
+  markets() {
+    local out
+    out="$("$GODOT" --headless --path Juhuo -- --shop 2>&1)"
+    echo "$out" | grep -E "^\[市\] (官市买粮|黑市买粮|官望 0)" | head -3
+    # 三条缺一不可：官市涨官望、黑市涨疑心、门槛真的挡人
+    echo "$out" | grep -q "官市买粮：成功" || return 1
+    echo "$out" | grep -q "黑市买粮：成功" || return 1
+    echo "$out" | grep -q "官市不卖给你"
+  }
+  step "两市交易（官市涨官望／黑市涨疑心／门槛挡人）" markets || true
+
   step "引导五步" tutrun || true
 
   savetest() {
