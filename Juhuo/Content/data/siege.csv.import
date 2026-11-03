@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://xmcgk7778sjc"
+
+[deps]
+
+files=["res://Content/data/siege.label.translation", "res://Content/data/siege.ke.translation", "res://Content/data/siege.casualty.translation", "res://Content/data/siege.minyuan.translation", "res://Content/data/siege.tianming.translation", "res://Content/data/siege.needs.translation", "res://Content/data/siege.troops.translation", "res://Content/data/siege.note.translation"]
+
+source_file="res://Content/data/siege.csv"
+dest_files=["res://Content/data/siege.label.translation", "res://Content/data/siege.ke.translation", "res://Content/data/siege.casualty.translation", "res://Content/data/siege.minyuan.translation", "res://Content/data/siege.tianming.translation", "res://Content/data/siege.needs.translation", "res://Content/data/siege.troops.translation", "res://Content/data/siege.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

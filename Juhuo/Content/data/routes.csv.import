@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://npdxa5crh4r2"
+
+[deps]
+
+files=["res://Content/data/routes.label.translation", "res://Content/data/routes.axis.translation", "res://Content/data/routes.threshold.translation", "res://Content/data/routes.note.translation"]
+
+source_file="res://Content/data/routes.csv"
+dest_files=["res://Content/data/routes.label.translation", "res://Content/data/routes.axis.translation", "res://Content/data/routes.threshold.translation", "res://Content/data/routes.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

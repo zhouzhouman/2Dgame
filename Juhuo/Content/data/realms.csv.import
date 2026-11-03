@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://blyhrq7t6j5p"
+
+[deps]
+
+files=["res://Content/data/realms.label.translation", "res://Content/data/realms.motto.translation", "res://Content/data/realms.note.translation"]
+
+source_file="res://Content/data/realms.csv"
+dest_files=["res://Content/data/realms.label.translation", "res://Content/data/realms.motto.translation", "res://Content/data/realms.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://b88u0oc7v1e3g"
+
+[deps]
+
+files=["res://Content/data/gifts.item.translation", "res://Content/data/gifts.requires.translation", "res://Content/data/gifts.sets.translation", "res://Content/data/gifts.note.translation"]
+
+source_file="res://Content/data/gifts.csv"
+dest_files=["res://Content/data/gifts.item.translation", "res://Content/data/gifts.requires.translation", "res://Content/data/gifts.sets.translation", "res://Content/data/gifts.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

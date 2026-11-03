@@ -264,38 +264,73 @@ public partial class Main : Node2D
     /// <summary>这一局是 <c>--bag</c> 自检（同样不碰玩家那份档）。</summary>
     private bool _bagRun;
 
+    // —— 主菜单（S3-00）——
+    /// <summary>启动时的命令行。菜单选完之后还要给 <see cref="BootWorld"/> 用。</summary>
+    private string[] _args = Array.Empty<string>();
+
+    /// <summary>菜单模型：默认停哪一项、哪一项灰着，都由它说了算。</summary>
+    private BootMenu? _bootMenu;
+
+    /// <summary>菜单开着时为真：不走动、不推引导、键全归菜单。</summary>
+    private bool _bootMenuOpen;
+
+    private Panel _bootPanel = default!;
+    private Label _bootTitle = default!;
+    private Label _bootSub = default!;
+    private readonly Label[] _bootRows = new Label[BootMenu.Count];
+    private Panel _bootCursor = default!;
+    private Label _bootNote = default!;
+    private Label _bootFoot = default!;
+
     public override void _Ready()
     {
         _save = new SaveService(GodotSaveFileSystem.Create());
 
-        var args = OS.GetCmdlineUserArgs();
+        _args = OS.GetCmdlineUserArgs();
+        ParseRunFlags(_args);
 
-        // 开发辅助：--playthrough 一局打通十二拍。**不读不写玩家那份档**——
-        // 它只证明这条路走得完，不该把玩家的进度换成一份机器跑出来的。
-        // 这一句要在 LoadProgress 之前：进度文件也不能被跑批改掉。
-        _playthrough = args.Contains("--playthrough");
-        if (_playthrough) _saveBlocked = true;
-
-        // --bag 也一样：囊里装的是这一趟捡到的，不能掺进玩家的旧物。
-        _bagRun = args.Contains("--bag");
-        if (_bagRun) _saveBlocked = true;
-
-        // --shop 只走内存里的一百文，别拿它改玩家的钱与信任。
-        _shopRun = args.Contains("--shop");
-        if (_shopRun) _saveBlocked = true;
-
-        // --siege 只算自己造的那份账：撤退不置旗标、招兵不加玩家的兵。
-        _siegeRun = args.Contains("--siege");
-        if (_siegeRun) _saveBlocked = true;
-
-        // --transition 自造十二拍与两条承诺走完四页，走完就退；同样不碰玩家那份档。
-        _transitionRun = args.Contains("--transition");
-        if (_transitionRun) _saveBlocked = true;
+        // 无头自检：三行说完菜单的三种情形，然后走人（S3-00）。
+        // 三行是跑出来的，不是写死的——第三行会在内存里真走一遍「新的开始」。
+        // 放在 LoadProgress 之前：这条自检连玩家的 progress.cfg 都不该碰。
+        if (_args.Contains("--bootmenu"))
+        {
+            foreach (var line in BootMenuSelfCheck.Lines()) GD.Print(line);
+            _quitAfterFrame = true;
+            return;
+        }
 
         LoadProgress();
+
+        // 跑批不学走路：脚本自己会走位。教程没标完成的话，
+        // TryShowChoice 会一直让路，通关脚本就一拍都答不了（门禁当场红过一次）。
+        if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun) _tut.Finish();
+
         BuildUi();
 
+        // 只为截图：把菜单摆上来，截一张就退（和 --shotbag 同一条路）。
+        if (_args.Contains("--shotmenu"))
+        {
+            OpenBootMenu();
+            _ = CaptureAndQuitAsync();
+            return;
+        }
 
+        // 玩家真的在玩：先给菜单，选完才造世界。世界还没造出来，HUD 只是一层底，被菜单盖着。
+        if (WantsBootMenu(_args))
+        {
+            OpenBootMenu();
+            return;
+        }
+
+        BootWorld(_args);
+    }
+
+    /// <summary>
+    /// 造世界、读档、跑自检参数。菜单选完之后才进得来；
+    /// 各类 <c>--playthrough / --bag / --shop / --siege / --transition</c> 自检不经过菜单，直接进来。
+    /// </summary>
+    private void BootWorld(string[] args)
+    {
         try
         {
             _table = PointTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/points.csv"));
@@ -738,6 +773,9 @@ public partial class Main : Node2D
             return;
         }
 
+        // 菜单开着时世界还没开始：不推引导、不走路、不敲门。
+        if (_bootMenuOpen) return;
+
         if (_world is null) return;
 
         _time += (float)delta;
@@ -768,6 +806,13 @@ public partial class Main : Node2D
     public override void _UnhandledInput(InputEvent @event)
     {
         if (@event is not InputEventKey k || !k.Pressed || k.Echo) return;
+
+        // 主菜单压在一切之上：世界还没开始，键全归它（↑↓ / Enter / Esc）。
+        if (_bootMenuOpen)
+        {
+            HandleBootMenuKey(k.Keycode);
+            return;
+        }
 
         // 转段四页压在一切之上：四页之内 Esc 也不退（这是不可逆的十分钟）。
         if (_transitionOpen)
@@ -986,6 +1031,9 @@ public partial class Main : Node2D
             SaveProgress();
             SetHint("按 H 随时看操作", 6f);
             GD.Print("[引导] 完成");
+
+            // 教程让路之后，把刚才忍住没弹的第一拍补上
+            TryShowChoice();
             return;
         }
 
@@ -1780,6 +1828,10 @@ public partial class Main : Node2D
         // 柜台也压在上面：这时候推一张决断上来，键盘会被两层抢。
         if (_shopOpen) return;
 
+        // 教程五步是第一课：它没走完就别推决断上来，两个框叠着玩家不知道该看谁。
+        // （玩家报的「没有新手教程」就是这个：新档一进场，b01 焚账先弹出来把教程压住了。）
+        if (!_tut.Done) return;
+
         var beat = _beats.PendingChoice(_world.Hub);
         if (beat is null) return;
 
@@ -2356,6 +2408,308 @@ public partial class Main : Node2D
         SetHint($"{beat.Name}　——　记下了。", 3f);
         AfterBeat(beat);
         return true;
+    }
+
+    // ————————————————————————— 主菜单 —————————————————————————
+
+    /// <summary>
+    /// 把几个"不碰玩家存档"的自检开关先立起来。
+    /// 必须在 <see cref="LoadProgress"/> 之前：跑批连进度文件都不该改。
+    /// </summary>
+    private void ParseRunFlags(string[] args)
+    {
+        // 开发辅助：--playthrough 一局打通十二拍。**不读不写玩家那份档**——
+        // 它只证明这条路走得完，不该把玩家的进度换成一份机器跑出来的。
+        _playthrough = args.Contains("--playthrough");
+        if (_playthrough) _saveBlocked = true;
+
+        // --bag 也一样：囊里装的是这一趟捡到的，不能掺进玩家的旧物。
+        _bagRun = args.Contains("--bag");
+        if (_bagRun) _saveBlocked = true;
+
+        // --shop 只走内存里的一百文，别拿它改玩家的钱与信任。
+        _shopRun = args.Contains("--shop");
+        if (_shopRun) _saveBlocked = true;
+
+        // --siege 只算自己造的那份账：撤退不置旗标、招兵不加玩家的兵。
+        _siegeRun = args.Contains("--siege");
+        if (_siegeRun) _saveBlocked = true;
+
+        // --transition 自造十二拍与两条承诺走完四页，走完就退；同样不碰玩家那份档。
+        _transitionRun = args.Contains("--transition");
+        if (_transitionRun) _saveBlocked = true;
+    }
+
+    /// <summary>
+    /// 这一次启动该不该先给菜单。
+    ///
+    /// 只有"人真的在玩"才给：带任何自检/调试参数的都不给——
+    /// <c>--playthrough / --bag / --shop / --siege / --transition / --audit / --chain ...</c>
+    /// 要的是直接进世界，菜单挡在中间会把这些跑批和 smoke 一起卡死。
+    /// </summary>
+    private static bool WantsBootMenu(string[] args)
+    {
+        foreach (var a in args)
+        {
+            if (!a.StartsWith("--", StringComparison.Ordinal)) continue;
+
+            // 这两类不改变"这是一次正常启动"：引导开关与指定落脚点。
+            if (a is "--tutorial" or "--no-tutorial") continue;
+            if (a.StartsWith("--hub=", StringComparison.Ordinal)) continue;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 把菜单摆上来。**只探一下档在不在**——这里不隔离坏档、不写文件，
+    /// 玩家要是直接退出，磁盘上什么都不该变。
+    /// </summary>
+    private void OpenBootMenu()
+    {
+        var (state, error) = _save.TryLoad();
+
+        // 坏档视同无档：继续那一项灰着，走「新的开始」才轮到隔离/改名。
+        _bootMenu = new BootMenu(hasSave: state is not null, saveBroken: state is null && error is not null);
+
+        BuildBootMenu();
+        _bootPanel.Visible = true;
+        _bootMenuOpen = true;
+
+        if (_view is not null) _view.UiBlocking = true;
+
+        PaintBootMenu();
+
+        GD.Print($"[菜单] 存档{(state is not null ? "在" : "不在")}"
+                 + $"{(error is not null ? "、且读不出来" : "")}；"
+                 + $"「继续」{(_bootMenu.ContinueEnabled ? "亮" : "灰")}，"
+                 + $"默认停在「{BootMenu.TextOf(_bootMenu.Selected)}」");
+    }
+
+    /// <summary>画一遍菜单：高亮条跟着选中项走，灰的项连字带色一起压下去。</summary>
+    private void PaintBootMenu()
+    {
+        if (_bootMenu is null) return;
+
+        for (var i = 0; i < BootMenu.Count; i++)
+        {
+            var (text, enabled) = _bootMenu.Line(i);
+            var row = _bootRows[i];
+            var here = i == _bootMenu.SelectedIndex;
+
+            row.Text = here ? $"· {text} ·" : text;
+            row.AddThemeColorOverride("font_color", !enabled
+                ? new Color(0.40f, 0.38f, 0.33f, 0.85f)
+                : here
+                    ? new Color(1.00f, 0.93f, 0.74f, 0.98f)
+                    : new Color(0.88f, 0.82f, 0.68f, 0.92f));
+            row.AddThemeFontSizeOverride("font_size", here ? 16 : 14);
+        }
+
+        // 灰的「继续」要说清楚为什么灰——玩家不需要猜。
+        var canContinue = _bootMenu.ContinueEnabled;
+        _bootNote.Text = canContinue ? "接着上次停下的地方走。" : "还没有能续的档，这一趟得从头来。";
+        _bootNote.AddThemeColorOverride("font_color", canContinue
+            ? new Color(0.72f, 0.66f, 0.52f, 0.92f)
+            : new Color(0.60f, 0.50f, 0.42f, 0.92f));
+
+        _bootCursor.Position = new Vector2(CursorX, RowY(_bootMenu.SelectedIndex) + 3);
+    }
+
+    /// <summary>第 i 行离画面顶多远。</summary>
+    private static float RowY(int i) => 212 + i * 34;
+
+    /// <summary>菜单文字的左边（整块大致居中；三项都是左对齐，读起来才齐）。</summary>
+    private const float RowX = 277;
+
+    /// <summary>选中项左边那一条红。</summary>
+    private const float CursorX = 265;
+
+    /// <summary>造菜单那一层。只造一次——重开菜单时只改文字与高亮。</summary>
+    private void BuildBootMenu()
+    {
+        if (_bootPanel is not null) return;
+
+        // 压在 Layer 10 的 HUD 上面：世界还没开始时，玩家不该看见血条似的那些字。
+        var layer = new CanvasLayer { Layer = 20 };
+        AddChild(layer);
+
+        _bootPanel = new Panel
+        {
+            Position = new Vector2(0, 0),
+            Size = new Vector2(ViewW, ViewH),
+        };
+        _bootPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.032f, 0.036f, 0.034f, 1f),
+            BorderColor = new Color(0.62f, 0.24f, 0.18f, 0.55f),
+            BorderWidthTop = 2,
+            BorderWidthBottom = 2,
+        });
+        layer.AddChild(_bootPanel);
+
+        _bootTitle = new Label
+        {
+            Position = new Vector2(0, 92),
+            Size = new Vector2(ViewW, 44),
+            Text = "举火",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_bootTitle, 30, new Color(0.95f, 0.88f, 0.70f, 0.98f));
+        _bootPanel.AddChild(_bootTitle);
+
+        _bootSub = new Label
+        {
+            Position = new Vector2(0, 138),
+            Size = new Vector2(ViewW, 18),
+            Text = "序章 · 白幡村",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_bootSub, 11, new Color(0.66f, 0.60f, 0.48f, 0.90f));
+        _bootPanel.AddChild(_bootSub);
+
+        // 一道细红横线：跟左上铭牌那一条是同一个记号。
+        var rule = new Panel
+        {
+            Position = new Vector2(ViewW / 2f - 72, 166),
+            Size = new Vector2(144, 1),
+        };
+        rule.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.62f, 0.24f, 0.18f, 0.75f) });
+        _bootPanel.AddChild(rule);
+
+        // 选中项左边那一条红：不靠字形（↑ ↓ 这类符号未必在字库里）。
+        _bootCursor = new Panel
+        {
+            Position = new Vector2(CursorX, RowY(0) + 3),
+            Size = new Vector2(3, 20),
+        };
+        _bootCursor.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.78f, 0.30f, 0.20f, 0.95f) });
+        _bootPanel.AddChild(_bootCursor);
+
+        for (var i = 0; i < BootMenu.Count; i++)
+        {
+            _bootRows[i] = new Label
+            {
+                Position = new Vector2(RowX, RowY(i)),
+                Size = new Vector2(240, 26),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(_bootRows[i], 14, new Color(0.88f, 0.82f, 0.68f, 0.92f));
+            _bootPanel.AddChild(_bootRows[i]);
+        }
+
+        _bootNote = new Label
+        {
+            Position = new Vector2(0, 320),
+            Size = new Vector2(ViewW, 18),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        Style(_bootNote, 10, new Color(0.72f, 0.66f, 0.52f, 0.92f));
+        _bootPanel.AddChild(_bootNote);
+
+        _bootFoot = new Label
+        {
+            Position = new Vector2(0, ViewH - 34),
+            Size = new Vector2(ViewW, 18),
+            Text = "方向键选　·　Enter 确认　·　Esc 退出",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_bootFoot, 10, new Color(0.52f, 0.49f, 0.41f, 0.85f));
+        _bootPanel.AddChild(_bootFoot);
+    }
+
+    /// <summary>菜单里的键：上下选、Enter 确认、Esc 退出。菜单里没有别的可以退。</summary>
+    private void HandleBootMenuKey(Key key)
+    {
+        if (_bootMenu is null) return;
+
+        switch (key)
+        {
+            case Key.Up:
+            case Key.W:
+                _bootMenu.MoveUp();
+                PaintBootMenu();
+                break;
+
+            case Key.Down:
+            case Key.S:
+                _bootMenu.MoveDown();
+                PaintBootMenu();
+                break;
+
+            case Key.Enter:
+            case Key.KpEnter:
+                ConfirmBootMenu();
+                break;
+
+            case Key.Escape:
+                QuitFromBootMenu();
+                break;
+        }
+    }
+
+    private void ConfirmBootMenu()
+    {
+        if (_bootMenu is null) return;
+
+        switch (_bootMenu.Confirm())
+        {
+            case BootChoice.Quit:
+                QuitFromBootMenu();
+                break;
+
+            case BootChoice.Continue:
+                ChooseContinue();
+                break;
+
+            default:
+                ChooseNewGame();
+                break;
+        }
+    }
+
+    /// <summary>退出：不读档、不写档。世界还没造出来，关窗口就是全部。</summary>
+    private void QuitFromBootMenu()
+    {
+        GetTree().Quit();
+    }
+
+    /// <summary>「继续」：菜单收起来，照旧读档进世界。</summary>
+    private void ChooseContinue()
+    {
+        CloseBootMenu();
+        BootWorld(_args);
+    }
+
+    /// <summary>
+    /// 「新的开始」：进度重置、旧档改名留底，然后从 hub1、第 1 天起跑。
+    /// 文件动作全由 <see cref="BootFlow"/> 做，这里只负责把结果说一句话。
+    /// </summary>
+    private void ChooseNewGame()
+    {
+        var flow = new BootFlow(_save, _ => SaveProgress());
+        var outcome = flow.Choose(BootChoice.NewGame, _progress);
+
+        if (!outcome.Ok) GD.PushWarning($"[菜单] 新的开始没走干净：{outcome.Error}");
+
+        // 教程要重新弹：LoadProgress 在菜单之前就跑过了，这里得手动拨回去。
+        _tut.Reset();
+
+        GD.Print($"[菜单] 新的开始 → 教程重置，旧档改名 {(outcome.ShelvedTo ?? "没挪成")}");
+
+        CloseBootMenu();
+        BootWorld(_args);
+    }
+
+    private void CloseBootMenu()
+    {
+        _bootMenuOpen = false;
+        if (_bootPanel is not null) _bootPanel.Visible = false;
     }
 
     // ————————————————————————— 存档 —————————————————————————

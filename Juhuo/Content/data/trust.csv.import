@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://besnrda1bq6up"
+
+[deps]
+
+files=["res://Content/data/trust.label.translation", "res://Content/data/trust.guan.translation", "res://Content/data/trust.min.translation", "res://Content/data/trust.yi.translation", "res://Content/data/trust.note.translation"]
+
+source_file="res://Content/data/trust.csv"
+dest_files=["res://Content/data/trust.label.translation", "res://Content/data/trust.guan.translation", "res://Content/data/trust.min.translation", "res://Content/data/trust.yi.translation", "res://Content/data/trust.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

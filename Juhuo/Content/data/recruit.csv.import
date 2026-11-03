@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dhutxv2vhq17m"
+
+[deps]
+
+files=["res://Content/data/recruit.troops.translation", "res://Content/data/recruit.trust.translation", "res://Content/data/recruit.note.translation"]
+
+source_file="res://Content/data/recruit.csv"
+dest_files=["res://Content/data/recruit.troops.translation", "res://Content/data/recruit.trust.translation", "res://Content/data/recruit.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

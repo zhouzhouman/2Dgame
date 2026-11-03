@@ -98,6 +98,12 @@ public sealed class SaveService
     /// <summary>上一份正式档的备份。坏档时的第二条命。</summary>
     public const string BackupPath = "user://save.bak";
 
+    /// <summary>「新的开始」时旧档挪去的地方（不删，可恢复）。</summary>
+    public const string PreBootPath = "user://save.pre-boot.json";
+
+    /// <summary>旧档的备份跟着挪去的地方。留着它，坏档回退会把上一局捞回来。</summary>
+    public const string PreBootBackupPath = "user://save.pre-boot.bak";
+
     /// <summary>背包格数上限（CANON §4：背包 12 格，无仓库）。规矩本体在 <see cref="Inventory"/>。</summary>
     public const int MaxInventory = Inventory.DefaultCapacity;
 
@@ -173,6 +179,32 @@ public sealed class SaveService
         }
 
         return (true, null);
+    }
+
+    /// <summary>
+    /// 「新的开始」：把现在这份档挪开，让服务从空档起跑。
+    ///
+    /// **不删**——改名成 <see cref="PreBootPath"/>，想回去还找得着。
+    /// 备份（<see cref="BackupPath"/>）也一起挪：留在原处的话，
+    /// 新局第一次坏档会被回退成上一局，那是最难查的一种"新游戏没生效"。
+    /// </summary>
+    /// <returns>(挪开了吗, 失败时为什么)。没有档时也算成功。</returns>
+    public (bool Ok, string? Error) TryShelveForNewGame()
+    {
+        try
+        {
+            if (_fs.Exists(_savePath)) _fs.Move(_savePath, PreBootPath);
+            if (_fs.Exists(_backupPath)) _fs.Move(_backupPath, PreBootBackupPath);
+
+            // 上次写剩的临时档：它不是玩家的东西，清掉免得下次被当成半份新档。
+            if (_fs.Exists(_tempPath)) _fs.Delete(_tempPath);
+
+            return (true, null);
+        }
+        catch (Exception e)
+        {
+            return (false, $"旧档挪不开：{e.Message}");
+        }
     }
 
     /// <summary>

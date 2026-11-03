@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://ci3hs0br66xgo"
+
+[deps]
+
+files=["res://Content/data/oaths.text.translation", "res://Content/data/oaths.beneficiary.translation", "res://Content/data/oaths.deadline.translation", "res://Content/data/oaths.penalty.translation", "res://Content/data/oaths.source.translation", "res://Content/data/oaths.note.translation"]
+
+source_file="res://Content/data/oaths.csv"
+dest_files=["res://Content/data/oaths.text.translation", "res://Content/data/oaths.beneficiary.translation", "res://Content/data/oaths.deadline.translation", "res://Content/data/oaths.penalty.translation", "res://Content/data/oaths.source.translation", "res://Content/data/oaths.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true
