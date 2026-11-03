@@ -124,6 +124,12 @@ public sealed class World
     /// <summary>"给他看"的应答表；接不上就当谁都不认。</summary>
     private readonly GiftTable? _gifts;
 
+    /// <summary>
+    /// 七个空间之间的路程账（travel.csv）。**路长只有这一份**——
+    /// 出口赶路与按 M 去别处都问它，Game 层不再写"赶路固定 2 刻"。
+    /// </summary>
+    private readonly TravelBook _travel;
+
     /// <summary>上一次搜到的那几样（用来在提示后面补一句"（+14 铜钱）"）。</summary>
     private IReadOnlyList<LootEntry> _lastPicked = Array.Empty<LootEntry>();
 
@@ -196,6 +202,9 @@ public sealed class World
 
     /// <summary>物品表（没接上时为 null；界面据此决定要不要画囊）。</summary>
     public ItemCatalog? Items => _items;
+
+    /// <summary>七个空间之间的路程账。M 面板与 <c>--map</c> 都问它，路长只有这一份。</summary>
+    public TravelBook Travel => _travel;
 
     /// <summary>上一次搜到的那几样，按装进去的顺序。</summary>
     public IReadOnlyList<LootEntry> LastPicked => _lastPicked;
@@ -270,13 +279,19 @@ public sealed class World
         { "hub1", "hub2", "hub3", "hub4", "hub5", "hub6", "hub7" };
 
     public World(PointTable table, NpcTalkTable talks, DialogueBook? book = null,
-        ItemCatalog? items = null, GiftTable? gifts = null)
+        ItemCatalog? items = null, GiftTable? gifts = null, TravelTable? travel = null)
     {
         _table = table;
         _talks = talks;
         _book = book ?? DialogueBook.FromTalks(talks);
         _items = items;
         _gifts = gifts;
+
+        // 位移表读不进来就是一张坏表：让它当场抛，别把"某条路怎么点都灰着"带进游戏。
+        // 交给行号的是 TravelTable 自己，这里只负责把文件读成文本。
+        _travel = new TravelBook(
+            travel ?? TravelTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/travel.csv")));
+
         Load("hub1");
     }
 
@@ -376,12 +391,37 @@ public sealed class World
         var i = IndexOf(Hub);
         if (i < 0 || i >= HubOrder.Length - 1) return false;
 
-        // 赶路 2 刻，记在离开的那个空间（rule_time_clock.md §3 / §验收 8）。
-        _clock.SpendTravel();
+        var next = HubOrder[i + 1];
 
-        Load(HubOrder[i + 1]);
+        // 赶路的刻数由 travel.csv 说了算，记在离开的那个空间
+        // （rule_time_clock.md §3 的"离开记账"，长度不再固定 2 刻）。
+        var cost = _travel.Cost(Hub, next);
+        if (cost > 0) _clock.AddHalfKe(cost * 2);
+
+        Load(next);
         StateChanged?.Invoke();
         return true;
+    }
+
+    /// <summary>
+    /// 按地图走一趟（M 面板回车）：扣刻、换场景，把该说的那句交回去。
+    ///
+    /// 账算在 <see cref="MapTravel.Go"/>（纯 C#，与测试同一条路），这里只做两件 Game 该做的事：
+    /// 把这一趟记进**离开的那个空间**的刻账，以及真的 <see cref="Load"/> 过去。
+    /// 没走成时一个字都不动——不扣刻、不换场景，玩家还能接着选别处。
+    /// </summary>
+    /// <param name="to">目的地 hub id。</param>
+    /// <returns>结果；成功时 <see cref="MapTravelResult.Message"/> 就是屏幕底下留的那句话。</returns>
+    public MapTravelResult TryTravel(string to)
+    {
+        var result = MapTravel.Go(_travel, Hub, to, KeLeft);
+        if (!result.Ok) return result;
+
+        if (result.Cost > 0) _clock.AddHalfKe(result.Cost * 2);
+
+        Load(result.Hub!);
+        StateChanged?.Invoke();
+        return result;
     }
 
     // ————————————————————————— 移动 —————————————————————————

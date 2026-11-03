@@ -19,6 +19,7 @@ namespace Juhuo;
 ///   Enter          选项面板里确认
 ///   Ctrl（按住）   把当前场景所有可交互物框出来
 ///   I              打开 / 关上囊（12 格）
+///   M              打开 / 关上地图（去别的空间，按路程扣刻）
 ///   G              对话里把囊中之物给他看
 ///   T              对话里跟商人买卖（布商 = 官市，掮客 = 黑市）
 ///   Esc            关掉对话；什么都没开时打开操作说明
@@ -44,6 +45,7 @@ public partial class Main : Node2D
     private Label _title = default!;
     private Label _subtitle = default!;
     private Label _hint = default!;
+    private Panel _plate = default!;
     private Panel _box = default!;
     private Label _boxHead = default!;
     private Label _boxBody = default!;
@@ -83,6 +85,22 @@ public partial class Main : Node2D
 
     /// <summary>从对话框里点开的——关上之后把对话还回去。</summary>
     private bool _bagFromBox;
+
+    // —— 地图（S3-01c）——
+    /// <summary>面板模型：七行、选中哪一行、走不动的那句话。</summary>
+    private MapScreen? _mapScreen;
+
+    /// <summary>地图面板：标题、顶上一行、七行地名、一句话、底部按键。</summary>
+    private Panel _map = default!;
+    private Label _mapTitle = default!;
+    private Label _mapHead = default!;
+    private Label _mapMsg = default!;
+    private Label _mapFoot = default!;
+    private readonly Label[] _mapRows = new Label[7];
+    private bool _mapOpen;
+
+    /// <summary>这一局是从菜单「新的开始」进来的：造好世界后要发开局那点钱。</summary>
+    private bool _newGame;
 
     /// <summary>HUD 那一行平时 / 快满时的颜色。</summary>
     private static readonly Color BeatInk = new(0.93f, 0.72f, 0.44f, 0.94f);
@@ -214,8 +232,8 @@ public partial class Main : Node2D
     private Label _transitionHead = default!;
     private Label _transitionFlash = default!;
 
-    /// <summary>四页共用的一组行：定都七行、报告十行，按最长的那一页备。</summary>
-    private readonly Label[] _transitionRows = new Label[10];
+    /// <summary>四页共用的一组行：定都七行、报告十一行（多一行"带走"），按最长的那一页备。</summary>
+    private readonly Label[] _transitionRows = new Label[11];
     private Label _transitionFoot = default!;
     private bool _transitionOpen;
 
@@ -285,6 +303,33 @@ public partial class Main : Node2D
     private Label _bootNote = default!;
     private Label _bootFoot = default!;
 
+    // —— 开场介绍（S3-01d）——
+    /// <summary>开场白表（intro.csv）。读不进来时为 null，开场就不放。</summary>
+    private IntroTable? _introTable;
+
+    /// <summary>立绘参数表（portraits.csv）。读不进来时为 null，对话退回一行字。</summary>
+    private PortraitTable? _portraits;
+
+    /// <summary>正在放的这一段；没在放时为 null。</summary>
+    private IntroFlow? _intro;
+
+    /// <summary>开场开着：世界与键都归它，别的面板一律不许弹。</summary>
+    private bool _introOpen;
+
+    /// <summary>这一趟已经放过开场（看完或跳过）——不再放第二遍。</summary>
+    private bool _introSeen;
+
+    private Panel _introPanel = default!;
+    private Label _introTop = default!;
+    private Label _introOrdinal = default!;
+    private Label _introName = default!;
+    private Label _introBody = default!;
+    private Label _introFoot = default!;
+    private PortraitView _introPortrait = default!;
+
+    /// <summary>对话框左侧的那张脸（128×128）；没有立绘时收起来。</summary>
+    private PortraitView _boxPortrait = default!;
+
     public override void _Ready()
     {
         _save = new SaveService(GodotSaveFileSystem.Create());
@@ -310,6 +355,15 @@ public partial class Main : Node2D
         _selfCheckRun = _args.Any(a => a.StartsWith("--", StringComparison.Ordinal)
                                        && a is not "--tutorial" and not "--no-tutorial");
 
+        // 无头自检：把九行开场原样打出来，然后走人（S3-01d）。
+        // 不建世界、不碰玩家任何一份文件——它验的就是"这段字读得出来、顺序没乱"。
+        if (_args.Contains("--intro"))
+        {
+            RunIntroCheck();
+            _quitAfterFrame = true;
+            return;
+        }
+
         LoadProgress();
 
         // 跑批不学走路：脚本自己会走位。教程没标完成的话，
@@ -331,6 +385,14 @@ public partial class Main : Node2D
         {
             OpenBootMenu();
             return;
+        }
+
+        // 调试：--newgame 走一遍「新的开始」那条路（发开局钱、放开场、弹教程）。
+        // 不碰玩家的档——带 -- 参数的运行本来就是自检（见 _selfCheckRun）。
+        if (_args.Contains("--newgame"))
+        {
+            _newGame = true;
+            _tut.Reset();
         }
 
         BootWorld(_args);
@@ -377,6 +439,11 @@ public partial class Main : Node2D
             _oathTable = OathTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/oaths.csv"));
             _realmTable = RealmTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/realms.csv"));
 
+            // 开场白与立绘（S3-01d）：两张表都只读一次；读不进来只是不放开场 / 不挂立绘，
+            // 不能让整局死在这里——别的表都用 FromCsv 直抛，这两张是"锦上添花"，退一步更好。
+            _introTable = TryLoadIntroTable();
+            _portraits = TryLoadPortraitTable();
+
             // 状态变了就落盘：搜查后、对话后、换空间（rule_flags_save.md §2）
             _world.StateChanged += SaveGame;
 
@@ -387,7 +454,20 @@ public partial class Main : Node2D
             // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
-            else if (!_shopRun && !_siegeRun && !_transitionRun) LoadSave();
+            // 新档（_newGame）绝不读档：菜单那条路会先把旧档改名，但调试入口没改名，
+            // 少了这一条就会把旧档读进来，于是"开局 30 文"永远发不出去（实测踩过）。
+            else if (!_shopRun && !_siegeRun && !_transitionRun && !_newGame
+                     && !WantsMapDemo(_args) && !WantsIntroDemo(_args)) LoadSave();
+
+            // 新档的开局资金（S3-01c）：钱数只有 StartKit 一份，这里只负责把它放进囊里。
+            // 只在「新的开始」且确实没读到档时发——旧档的钱在 inventory 里，再塞一次就是白送。
+            if (_newGame && _loadedState is null)
+            {
+                var coins = StartKit.Fill(_world.Bag, _items, out var starterError);
+                GD.Print(starterError is null
+                    ? $"[开局] 囊里放进 {coins} 文"
+                    : $"[开局] 钱没放进：{starterError}");
+            }
 
             // 三轴只在存档里存一份：这里拿到的就是 SaveState.Trust["prologue"] 那个对象，
             // 账本就地改它，SaveGame 再原样交回去。没有条目时用存档默认值，不自己设初值。
@@ -465,6 +545,11 @@ public partial class Main : Node2D
             GD.PushError($"初始化失败：{e.Message}\n{e.StackTrace}");
             _hint.Text = $"初始化失败：{e.Message}";
         }
+
+        // 开场介绍（S3-01d）：新档在世界造好之后、教程之前先放这九行。
+        // 老档不放开场——他上一次已经看过了；三个条件都收在 IntroFlow.ShouldPlay 里。
+        if (_world is not null && IntroFlow.ShouldPlay(_newGame, _loadedState is not null, _introSeen))
+            StartIntro(0);
 
         // 开发辅助：--tutstep=2 直接把引导拨到第 N 步，--help 打开操作说明（都是为了截图）
         foreach (var a in OS.GetCmdlineUserArgs())
@@ -727,6 +812,33 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
         }
 
+        // 开发辅助：--map 打地图四行（当前 / 六条路各几刻 / 走一趟 / 再走一趟），然后退出（S3-01c）
+        if (OS.GetCmdlineUserArgs().Contains("--map"))
+        {
+            if (_world is not null)
+            {
+                // 先把"新档此刻"的账抄下来：下面那张自检会真的把人挪走（World.TryTravel），
+                // 挪完再算这四行的话，"当前"就变成别的空间了。
+                var lines = MapReport.Lines(_world.Travel, _world.Hub, _world.KeLeft);
+
+                // 真走一趟，证明"扣刻 + 换场景"这条接线没接错。
+                // 走成了什么都不多打；没走成才补一行，免得把票面那四行的格式撑开。
+                var before = _world.Hub;
+                var live = _world.TryTravel("hub4");
+                if (!live.Ok || !string.Equals(_world.Hub, "hub4", StringComparison.Ordinal))
+                    GD.Print($"{MapReport.Prefix} 接线异常：{before} → {_world.Hub}，{live.Message}");
+
+                foreach (var line in lines) GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{MapReport.Prefix} 初始化没完成（travel.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
         // 开发辅助：--savetest 写一份档 → 重读 → 逐字段比对 → 退出
         if (OS.GetCmdlineUserArgs().Contains("--savetest"))
         {
@@ -767,6 +879,36 @@ public partial class Main : Node2D
             OpenShop(ShopTable.Official);
             _ = CaptureAndQuitAsync();
         }
+        else if (args.Contains("--shotmap"))
+        {
+            CloseChoice(restoreTutorial: false);
+
+            // --mapspent：先在这儿真翻几件东西，把余刻压到 2——
+            // 新档余 8 刻时七条路全走得起，截出来看不见"今天走不动了"那一档。
+            if (args.Contains("--mapspent") && _world is not null)
+            {
+                for (var i = 0; i < 20 && _world.KeLeft > 2 && _world.Props.Count > 0; i++)
+                {
+                    if (!StandAt(_world.Props[i % _world.Props.Count], out _)) continue;
+                    _world.Search();
+                }
+            }
+
+            OpenMap();
+            _ = CaptureAndQuitAsync();
+        }
+        else if (args.FirstOrDefault(a => a.StartsWith("--shotintro", StringComparison.Ordinal)) is { } shotIntro)
+        {
+            // 只为截图：默认拨到第 7 行（老仆有立绘的那一句），截一张就退；
+            // --shotintro=0 可以看第一句（旁白，左边不出人）。
+            var at = IntroShotLine;
+            var eq = shotIntro.IndexOf('=');
+            if (eq > 0 && int.TryParse(shotIntro[(eq + 1)..], out var n)) at = n;
+
+            CloseChoice(restoreTutorial: false);
+            StartIntro(at);
+            _ = CaptureAndQuitAsync();
+        }
         else if (args.Contains("--shot"))
         {
             _ = CaptureAndQuitAsync();
@@ -790,6 +932,11 @@ public partial class Main : Node2D
         if (_world is null) return;
 
         _time += (float)delta;
+
+        // 开场放着时只走时间（立绘脚下那条光要呼吸），不推引导、不提醒 Ctrl：
+        // 玩家这会儿该看的是那九行字，不是"按住 Ctrl"。
+        if (_introOpen) return;
+
         TickTutorial((float)delta);
         TickTrustToast();
 
@@ -822,6 +969,14 @@ public partial class Main : Node2D
         if (_bootMenuOpen)
         {
             HandleBootMenuKey(k.Keycode);
+            return;
+        }
+
+        // 开场压在一切之上（菜单之后、世界之前的那九行）：只认 Enter 与 Esc，
+        // 别的键一律吞掉——这一段里不许有对话、地图、囊、信任弹出来。
+        if (_introOpen)
+        {
+            HandleIntroKey(k.Keycode);
             return;
         }
 
@@ -861,10 +1016,21 @@ public partial class Main : Node2D
             return;
         }
 
+        // 地图开着时，键盘归它：↑↓ 选、Enter 走、M / Esc 收起。
+        if (_mapOpen)
+        {
+            HandleMapKey(k.Keycode);
+            return;
+        }
+
         switch (k.Keycode)
         {
             case Key.I:
                 ToggleBag();
+                break;
+
+            case Key.M:
+                ToggleMap();
                 break;
 
             case Key.G:
@@ -1054,7 +1220,7 @@ public partial class Main : Node2D
     private void PaintTutorial()
     {
         var (key, text) = _tut.Line;
-        _tutPanel.Visible = !_tut.Done && !_box.Visible && !_helpOpen;
+        _tutPanel.Visible = !_tut.Done && !_introOpen && !_box.Visible && !_helpOpen && !_mapOpen;
         _tutKey.Text = key;
         _tutText.Text = text;
     }
@@ -1181,13 +1347,45 @@ public partial class Main : Node2D
 
     private void ShowText(string head, string body)
     {
+        // 说话的人是谁，由"伸手够得着的那个人"决定——翻东西翻出来的那一页没有人，左边就不出人。
+        var who = _world?.NearestSpeaker();
+        var card = DialogueCard.From(head, body, who?.Name, _portraits);
+
         _box.Visible = true;
-        _boxHead.Text = head;
-        _boxBody.Text = body;
+        _boxHead.Text = card.Title;
+        _boxBody.Text = card.Body;
+
+        // 有立绘的人：框长高到 144，左边站一个 128×128 的半身像；
+        // 数据里没有这个人（或立绘表没读进来）就退回原来那一行字的样子。
+        if (card.HasPortrait && ResolvePortrait(card.PortraitNpc) is { } face)
+        {
+            _box.Position = new Vector2(16, ViewH - 162);
+            _box.Size = new Vector2(ViewW - 32, 144);
+
+            _boxPortrait.Position = new Vector2(8, 8);
+            _boxPortrait.Show(face, PortraitArt.SmallScale);
+
+            _boxHead.Position = new Vector2(148, 8);
+            _boxHead.Size = new Vector2(240, 17);
+            _boxBody.Position = new Vector2(148, 30);
+            _boxBody.Size = new Vector2(440, 104);
+        }
+        else
+        {
+            _box.Position = new Vector2(16, ViewH - 118);
+            _box.Size = new Vector2(ViewW - 32, 100);
+
+            _boxPortrait.Visible = false;
+
+            _boxHead.Position = new Vector2(14, 7);
+            _boxHead.Size = new Vector2(ViewW - 60, 17);
+            _boxBody.Position = new Vector2(14, 28);
+            _boxBody.Size = new Vector2(ViewW - 56, 64);
+        }
 
         // 跟人说话时才提"给他看"——搜东西搜出来的那一页没有这个入口
         if (_boxFoot is not null)
-            _boxFoot.Text = _world.NearestSpeaker() is not null
+            _boxFoot.Text = _world?.NearestSpeaker() is not null
                 ? "G 给他看　·　E / Esc 关掉"
                 : "E / Esc 关掉";
 
@@ -1256,7 +1454,8 @@ public partial class Main : Node2D
                 : _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
 
             // 囊跟在节拍后面。快满了才变色——一直刺眼等于没提示。
-            _beatLine.Text = (line + BagHud.Suffix(_world.Bag)).Trim();
+            // 钱也跟在后面：钱就在囊里（coin 那一格），这里只把数念出来。
+            _beatLine.Text = (line + BagHud.Suffix(_world.Bag) + BagHud.MoneySuffix(_world.Bag)).Trim();
             _beatLine.AddThemeColorOverride("font_color",
                 BagHud.Warn(_world.Bag) ? BagInk : BeatInk);
         }
@@ -1278,7 +1477,7 @@ public partial class Main : Node2D
             return;
         }
 
-        if (_box.Visible || _helpOpen || _choiceOpen || _trustOpen) return;
+        if (_box.Visible || _helpOpen || _choiceOpen || _trustOpen || _mapOpen) return;
 
         OpenBag(showing: false, npc: "");
     }
@@ -1547,7 +1746,7 @@ public partial class Main : Node2D
             return;
         }
 
-        if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen) return;
+        if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen || _mapOpen) return;
 
         OpenTrust();
     }
@@ -1818,6 +2017,246 @@ public partial class Main : Node2D
             : new Color(0.86f, 0.76f, 0.52f, 0.96f));
     }
 
+    // ————————————————————————— 地图（S3-01c） —————————————————————————
+
+    /// <summary>
+    /// 地图面板：七个空间一行一个。标题「去何处」，顶上是第几天与余刻，
+    /// 底下三句按键。选中那行点灯，走不动的行灰着。
+    /// </summary>
+    private void BuildMap(CanvasLayer ui)
+    {
+        _map = new Panel
+        {
+            Position = new Vector2(128, 70),
+            Size = new Vector2(384, 288),
+            Visible = false,
+        };
+        _map.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.045f, 0.050f, 0.048f, 0.97f),
+            BorderColor = new Color(0.60f, 0.46f, 0.26f, 0.92f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 2,
+            BorderWidthRight = 1,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+        });
+        ui.AddChild(_map);
+
+        _mapTitle = new Label
+        {
+            Position = new Vector2(18, 12),
+            Size = new Vector2(160, 22),
+            Text = MapText.Title,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_mapTitle, 15, new Color(0.96f, 0.90f, 0.72f, 0.98f));
+        _map.AddChild(_mapTitle);
+
+        _mapHead = new Label
+        {
+            Position = new Vector2(160, 14),
+            Size = new Vector2(206, 18),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_mapHead, 10, new Color(0.78f, 0.72f, 0.56f, 0.92f));
+        _map.AddChild(_mapHead);
+
+        for (var i = 0; i < _mapRows.Length; i++)
+        {
+            var row = new Label
+            {
+                Position = new Vector2(18, 44 + i * 26),
+                Size = new Vector2(348, 24),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Style(row, 13, new Color(0.84f, 0.81f, 0.73f, 0.94f));
+            _map.AddChild(row);
+            _mapRows[i] = row;
+        }
+
+        _mapMsg = new Label
+        {
+            Position = new Vector2(18, 228),
+            Size = new Vector2(348, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_mapMsg, 10, new Color(0.86f, 0.62f, 0.40f, 0.96f));
+        _map.AddChild(_mapMsg);
+
+        _mapFoot = new Label
+        {
+            Position = new Vector2(18, 258),
+            Size = new Vector2(348, 18),
+            Text = MapText.Foot,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_mapFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.88f));
+        _map.AddChild(_mapFoot);
+    }
+
+    /// <summary>
+    /// M：开合地图。**别的面板压着时一律不开**——对话、囊、信任、柜台、攻城、转段，
+    /// 任何一层在上面，这一下 M 都不该再叠一张。
+    /// </summary>
+    private void ToggleMap()
+    {
+        if (_world is null) return;
+
+        if (_mapOpen)
+        {
+            CloseMap();
+            return;
+        }
+
+        if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen || _trustOpen
+            || _shopOpen || _transitionOpen || _introOpen) return;
+
+        OpenMap();
+    }
+
+    /// <summary>摆开地图：按此刻的天数、余刻、预算现算七行。</summary>
+    private void OpenMap()
+    {
+        if (_world is null) return;
+
+        _mapScreen = new MapScreen(
+            _world.Travel, _world.Hub, _beats?.Day ?? 1, _world.KeLeft, _world.KeBudget);
+
+        _mapOpen = true;
+        _map.Visible = true;
+        _tutPanel.Visible = false;
+        _hint.Visible = false;
+        if (_view is not null) _view.UiBlocking = true;
+
+        PaintMap();
+        GD.Print($"[图] 打开：{_world.Hub}，余刻 {_world.KeLeft}");
+    }
+
+    private void CloseMap()
+    {
+        if (!_mapOpen) return;
+
+        _mapOpen = false;
+        _map.Visible = false;
+        _mapScreen = null;
+
+        _hint.Visible = !_box.Visible;
+        if (_view is not null)
+            _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _bagOpen
+                               || _trustOpen || _shopOpen || _transitionOpen || _introOpen;
+
+        PaintTutorial();
+        RefreshHint();
+    }
+
+    /// <summary>地图上只有四件事：上下选、Enter 走、M / Esc 收起。</summary>
+    private void HandleMapKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Up or Key.W:
+                MoveMap(-1);
+                break;
+
+            case Key.Down or Key.S:
+                MoveMap(1);
+                break;
+
+            case Key.Enter or Key.KpEnter or Key.E or Key.Space:
+                ConfirmMapTravel();
+                break;
+
+            case Key.M:
+            case Key.Escape:
+                CloseMap();
+                break;
+        }
+    }
+
+    private void MoveMap(int delta)
+    {
+        if (_mapScreen is null) return;
+        _mapScreen.Move(delta);
+        PaintMap();
+    }
+
+    /// <summary>
+    /// 回车：走这一行。走成了就换场景、把"从哪儿到哪儿走了几刻"留在屏幕底下；
+    /// 走不成就**原地不动**，把原因写在面板里——不扣刻、不换场景。
+    /// </summary>
+    private void ConfirmMapTravel()
+    {
+        if (_mapScreen is null || _world is null) return;
+
+        var row = _mapScreen.Current;
+
+        if (row.State == MapRowState.Here)
+        {
+            _mapScreen.Refuse(MapText.AlreadyHere);
+            PaintMap();
+            return;
+        }
+
+        var result = _world.TryTravel(row.Hub);
+
+        if (!result.Ok)
+        {
+            _mapScreen.Refuse(result.Message);
+            PaintMap();
+            GD.Print($"[图] {row.Hub} 走不动：{result.Message}");
+            return;
+        }
+
+        CloseMap();
+        Mount();
+        SetHint(result.Message, 5f);
+        GD.Print($"[图] {result.Message}");
+    }
+
+    /// <summary>把七行重画一遍：选中点灯、走不动的灰着、其余照旧。</summary>
+    private void PaintMap()
+    {
+        if (_mapScreen is null) return;
+
+        _mapTitle.Text = _mapScreen.Title;
+        _mapHead.Text = _mapScreen.Head;
+        _mapFoot.Text = _mapScreen.Foot;
+
+        var rows = _mapScreen.Rows();
+        var sel = _mapScreen.Selected;
+
+        for (var i = 0; i < _mapRows.Length; i++)
+        {
+            var label = _mapRows[i];
+            if (i >= rows.Count)
+            {
+                label.Text = "";
+                continue;
+            }
+
+            var row = rows[i];
+            var picked = i == sel;
+            var pad = picked ? "▸ " : row.State == MapRowState.Here ? "" : "　";
+
+            label.Text = pad + row.Text;
+            label.AddThemeColorOverride("font_color", picked
+                ? new Color(0.96f, 0.82f, 0.48f, 0.99f)
+                : row.State == MapRowState.Here
+                    ? new Color(0.88f, 0.79f, 0.52f, 0.96f)
+                    : row.Dim
+                        ? new Color(0.46f, 0.44f, 0.40f, 0.60f)
+                        : new Color(0.84f, 0.81f, 0.73f, 0.94f));
+        }
+
+        _mapMsg.Text = _mapScreen.Message;
+        _mapMsg.Visible = _mapMsg.Text.Length > 0;
+    }
+
     // ————————————————————————— 十二节拍 —————————————————————————
 
     /// <summary>
@@ -1827,6 +2266,10 @@ public partial class Main : Node2D
     {
         if (_beats is null || _world is null || _choiceOpen || _box.Visible || _helpOpen) return;
 
+        // 开场那九行压在最上面：这一段里什么面板都不许弹（玩家的原话是"一开始一头雾水"，
+        // 再叠一张决断上来只会更雾）。
+        if (_introOpen) return;
+
         // --bag 只翻东西，不答决断：面板压上来会把后面的按键全吃掉。
         if (_bagRun) return;
 
@@ -1835,6 +2278,9 @@ public partial class Main : Node2D
 
         // 「信任」面板同理。
         if (_trustOpen) return;
+
+        // 地图压在上面时也不弹：玩家正在看"去何处"，推一张决断上来会把 ↑↓ 抢走。
+        if (_mapOpen) return;
 
         // 柜台也压在上面：这时候推一张决断上来，键盘会被两层抢。
         if (_shopOpen) return;
@@ -2205,10 +2651,17 @@ public partial class Main : Node2D
             _beats?.Day ?? 0);
     }
 
-    /// <summary>报告页的十行：前四行照刚选的，中间五行是文档原句，最后一行是实数。</summary>
+    /// <summary>
+    /// 报告页的十一行：前四行照刚选的，中间五行是文档原句，
+    /// 再一行"带走"（转段这一刻囊里真有的东西），最后一行是实数。
+    /// </summary>
     private IReadOnlyList<TransitionRow> ReportRows(TransitionScreen screen)
     {
-        var lines = screen.ReportLines(TransitionFacts());
+        var lines = new List<string>(screen.ReportLines(TransitionFacts()));
+
+        // "带走"紧挨着实数行上面：先说带了什么走，再说手里有多少兵、第几天。
+        lines.Insert(Math.Max(0, lines.Count - 1), TransitionText.CarryLine(_world?.Bag, _items));
+
         var rows = new List<TransitionRow>(lines.Count);
         foreach (var line in lines) rows.Add(new TransitionRow("", line, false));
         return rows;
@@ -2450,6 +2903,25 @@ public partial class Main : Node2D
         _transitionRun = args.Contains("--transition");
         if (_transitionRun) _saveBlocked = true;
     }
+
+    /// <summary>
+    /// 这一次启动是不是"只看地图"（<c>--map</c> / <c>--shotmap</c>）。
+    ///
+    /// 这两条要看的是**新档第一天的七条路**，读进玩家那份档就会把"当前"写成他上次停的地方，
+    /// 截出来与打印出来的都对不上票面。
+    /// </summary>
+    private static bool WantsMapDemo(string[] args) =>
+        args.Contains("--map") || args.Contains("--shotmap");
+
+    /// <summary>
+    /// 这一次启动是不是"只看开场"（<c>--intro</c> / <c>--shotintro</c>）。
+    ///
+    /// 开场是新档的第一屏，看的就是 hub1 的第 1 天；读进玩家那份档，
+    /// 截出来会变成他上次停的地方，还带着他已经改过的包袱。
+    /// </summary>
+    private static bool WantsIntroDemo(string[] args) =>
+        args.Contains("--intro")
+        || args.Any(a => a.StartsWith("--shotintro", StringComparison.Ordinal));
 
     /// <summary>
     /// 这一次启动该不该先给菜单。
@@ -2711,6 +3183,9 @@ public partial class Main : Node2D
         // 教程要重新弹：LoadProgress 在菜单之前就跑过了，这里得手动拨回去。
         _tut.Reset();
 
+        // 开局那点钱只在「新的开始」发（S3-01c）；续档那条路不动它。
+        _newGame = true;
+
         GD.Print($"[菜单] 新的开始 → 教程重置，旧档改名 {(outcome.ShelvedTo ?? "没挪成")}");
 
         CloseBootMenu();
@@ -2721,6 +3196,199 @@ public partial class Main : Node2D
     {
         _bootMenuOpen = false;
         if (_bootPanel is not null) _bootPanel.Visible = false;
+    }
+
+    // ————————————————————————— 开场介绍（S3-01d）—————————————————————————
+
+    /// <summary><c>--shotintro</c> 截的那一行：第 7 句，老仆，带立绘。</summary>
+    private const int IntroShotLine = 6;
+
+    /// <summary>
+    /// 开场第 N 句（0 起）摆上来。世界已经造好、教程还没开始——
+    /// 玩家先知道自己在哪儿、手里是什么，再学怎么走路。
+    /// </summary>
+    /// <param name="index">从第几句开始（0 起；截图会从第 7 句起）。</param>
+    private void StartIntro(int index)
+    {
+        if (_introTable is null)
+        {
+            GD.Print("[开场] 没有开场白表（intro.csv 读不进来），这次不放");
+            return;
+        }
+
+        _intro = new IntroFlow(_introTable);
+
+        for (var i = 0; i < index && i < _intro.Count - 1; i++) _intro.Advance();
+
+        // 开场期间别的面板一律收起来：对话、选项、地图都不许压在这九行上面。
+        CloseChoice(restoreTutorial: false);
+
+        _introOpen = true;
+
+        if (_tutPanel is not null) _tutPanel.Visible = false;
+        if (_hint is not null) _hint.Visible = false;
+        if (_box is not null) _box.Visible = false;
+        ShowHud(false);
+        if (_view is not null)
+        {
+            _view.SetBoxOpen(false);
+            _view.UiBlocking = true;
+        }
+
+        _introPanel.Visible = true;
+        PaintIntro();
+
+        var line = _intro.Current;
+        GD.Print($"[开场] 第 {_intro.Ordinal}/{_intro.Count} 句："
+                 + $"{(line.IsNarration ? "旁白" : line.Speaker + (line.HasPortrait ? "（立绘）" : ""))}");
+    }
+
+    /// <summary>把现在这一句摆到画面上：旁白只有字，有人说话时左边出立绘、右边出话。</summary>
+    private void PaintIntro()
+    {
+        if (_intro is null) return;
+
+        var line = _intro.Current;
+        var portrait = ResolvePortrait(line.Portrait);
+
+        _introName.Text = line.IsNarration ? "旁白" : line.Speaker;
+        _introName.AddThemeColorOverride("font_color", line.IsNarration
+            ? new Color(0.62f, 0.58f, 0.48f, 0.92f)
+            : new Color(0.96f, 0.88f, 0.68f, 0.98f));
+
+        _introBody.Text = line.Text;
+        _introOrdinal.Text = $"{_intro.Ordinal} / {_intro.Count}";
+
+        // 有人站着，话就往右让，给立绘腾出左边那一块；没人就把整条框都给字。
+        if (portrait is not null)
+        {
+            _introPortrait.Show(portrait, PortraitArt.BigScale);
+            _introName.Position = new Vector2(232, 12);
+            _introBody.Position = new Vector2(232, 36);
+            _introBody.Size = new Vector2(352, 78);
+        }
+        else
+        {
+            _introPortrait.Show(null);
+            _introName.Position = new Vector2(20, 12);
+            _introBody.Position = new Vector2(20, 36);
+            _introBody.Size = new Vector2(568, 78);
+        }
+    }
+
+    /// <summary>开场里的键：Enter 翻一行，Esc 不看了。别的键什么都不做（这一层已经全吞了）。</summary>
+    private void HandleIntroKey(Key key)
+    {
+        switch (key)
+        {
+            case Key.Enter:
+            case Key.KpEnter:
+                if (_intro is null) return;
+
+                if (_intro.Advance()) PaintIntro();
+                else FinishIntro(skipped: false);
+                break;
+
+            case Key.Escape:
+                FinishIntro(skipped: true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 收场：九行全部记作看过，把教程接上来。
+    /// 跳过和看完走同一条路——差别只在打印那一句。
+    /// </summary>
+    private void FinishIntro(bool skipped)
+    {
+        if (_intro is null || !_introOpen) return;
+
+        if (skipped) _intro.Skip();
+
+        _introOpen = false;
+        _introSeen = true;
+
+        _introPanel.Visible = false;
+        _introPortrait.Show(null);
+        ShowHud(true);
+
+        if (_view is not null)
+            _view.UiBlocking = _helpOpen || _choiceOpen || _bagOpen || _trustOpen || _mapOpen || _shopOpen;
+
+        if (_hint is not null) _hint.Visible = true;
+
+        PaintTutorial();
+        RefreshHint();
+
+        GD.Print(skipped
+            ? $"[开场] 跳过（{_intro.Count} 行都记作看过），进教程"
+            : $"[开场] 九行放完，进教程");
+    }
+
+    /// <summary>表里的立绘名 → 这个人的脸。没有这张表 / 没这个人，都返回 null。</summary>
+    private Portrait? ResolvePortrait(string? npc)
+    {
+        if (string.IsNullOrEmpty(npc) || _portraits is null) return null;
+        return _portraits.TryGet(npc, out var p) ? p : null;
+    }
+
+    /// <summary>
+    /// 开场那九行压上来时，HUD 让开。
+    /// 压暗层只有九成不透明，HUD 的字会从底下透出来，和"序章 · 白幡村"叠成一团。
+    /// </summary>
+    private void ShowHud(bool on)
+    {
+        if (_plate is not null) _plate.Visible = on;
+        if (_title is not null) _title.Visible = on;
+        if (_subtitle is not null) _subtitle.Visible = on;
+        if (_beatLine is not null) _beatLine.Visible = on;
+    }
+
+    /// <summary>读 intro.csv。读不进来只是不放开场，打一句警告就走。</summary>
+    private static IntroTable? TryLoadIntroTable()
+    {
+        try
+        {
+            return IntroTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/intro.csv"));
+        }
+        catch (Exception e)
+        {
+            GD.PushWarning($"[开场] intro.csv 读不进来：{e.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>读 portraits.csv。读不进来只是不挂立绘，对话退回一行字。</summary>
+    private static PortraitTable? TryLoadPortraitTable()
+    {
+        try
+        {
+            return PortraitTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/portraits.csv"));
+        }
+        catch (Exception e)
+        {
+            GD.PushWarning($"[立绘] portraits.csv 读不进来：{e.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <c>--intro</c>：无头把九行打出来（第几句、谁、带不带立绘、说了什么），然后退出。
+    /// 不走世界、不写文件——验的就是"这张表读得出来、顺序没乱、旁白没挂立绘"。
+    /// </summary>
+    private void RunIntroCheck()
+    {
+        try
+        {
+            var table = IntroTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/intro.csv"));
+
+            foreach (var line in IntroReport.Lines(table)) GD.Print(line);
+        }
+        catch (Exception e)
+        {
+            GD.Print($"{IntroReport.Prefix} 读不出来：{e.Message}");
+            _exitCode = 1;
+        }
     }
 
     // ————————————————————————— 存档 —————————————————————————
@@ -2935,18 +3603,18 @@ public partial class Main : Node2D
         _font = LoadFont();
 
         // 左上铭牌
-        var plate = new Panel
+        _plate = new Panel
         {
             Position = new Vector2(12, 10),
             Size = new Vector2(196, 50),
         };
-        plate.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        _plate.AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
             BgColor = new Color(0.045f, 0.052f, 0.050f, 0.80f),
             BorderColor = new Color(0.62f, 0.24f, 0.18f, 0.90f),
             BorderWidthLeft = 2,
         });
-        ui.AddChild(plate);
+        ui.AddChild(_plate);
 
         _title = new Label
         {
@@ -3034,6 +3702,8 @@ public partial class Main : Node2D
         BuildTrust(ui);
         BuildShop(ui);
         BuildTransition(ui);
+        BuildMap(ui);
+        BuildIntro();
 
         PaintTutorial();
         _help.Visible = false;
@@ -3063,6 +3733,16 @@ public partial class Main : Node2D
         });
         ui.AddChild(_box);
 
+        // 说话的人站在框的左边：128×128 的小立绘，占的是"名字 + 三行字"的宽度。
+        // 没有立绘数据的人（巡逻的衙役、临时搭话的）就不摆这块，框恢复成原来那一行字。
+        _boxPortrait = new PortraitView
+        {
+            Position = new Vector2(8, 6),
+            Size = new Vector2(PortraitArt.SmallPixels, PortraitArt.SmallPixels),
+            Visible = false,
+        };
+        _box.AddChild(_boxPortrait);
+
         _boxHead = new Label
         {
             Position = new Vector2(14, 7),
@@ -3091,6 +3771,106 @@ public partial class Main : Node2D
         };
         Style(_boxFoot, 9, new Color(0.58f, 0.55f, 0.46f, 0.80f));
         _box.AddChild(_boxFoot);
+    }
+
+    /// <summary>
+    /// 开场那一层（S3-01d）：整屏压暗 + 顶上一行地名 + 底部一条字幕框 + 左边的立绘。
+    ///
+    /// 单独一层（Layer 18）：它要盖住 HUD、教程条、底部提示，
+    /// 但得让主菜单（Layer 20）盖在它上面——菜单还没选完的时候不该看见开场。
+    /// </summary>
+    private void BuildIntro()
+    {
+        var layer = new CanvasLayer { Layer = 18 };
+        AddChild(layer);
+
+        _introPanel = new Panel
+        {
+            Position = new Vector2(0, 0),
+            Size = new Vector2(ViewW, ViewH),
+            Visible = false,
+        };
+        _introPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.020f, 0.024f, 0.023f, 0.90f),
+        });
+        layer.AddChild(_introPanel);
+
+        _introTop = new Label
+        {
+            Position = new Vector2(0, 16),
+            Size = new Vector2(ViewW, 16),
+            Text = "序章 · 白幡村",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_introTop, 10, new Color(0.66f, 0.60f, 0.48f, 0.92f));
+        _introPanel.AddChild(_introTop);
+
+        _introOrdinal = new Label
+        {
+            Position = new Vector2(ViewW - 70, 16),
+            Size = new Vector2(54, 16),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_introOrdinal, 9, new Color(0.52f, 0.49f, 0.41f, 0.85f));
+        _introPanel.AddChild(_introOrdinal);
+
+        // 立绘：192×192，底边压进字幕框 20 像素，像人从桌子后面探出半身。
+        _introPortrait = new PortraitView
+        {
+            Position = new Vector2(28, ViewH - 140 - PortraitArt.BigPixels + 22),
+            Size = new Vector2(PortraitArt.BigPixels, PortraitArt.BigPixels),
+            Visible = false,
+        };
+        _introPanel.AddChild(_introPortrait);
+
+        var box = new Panel
+        {
+            Position = new Vector2(16, ViewH - 140),
+            Size = new Vector2(ViewW - 32, 124),
+        };
+        box.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.055f, 0.062f, 0.060f, 0.96f),
+            BorderColor = new Color(0.42f, 0.36f, 0.26f, 0.85f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 1,
+            BorderWidthRight = 1,
+        });
+        _introPanel.AddChild(box);
+
+        _introName = new Label
+        {
+            Position = new Vector2(20, 12),
+            Size = new Vector2(240, 18),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_introName, 13, new Color(0.96f, 0.88f, 0.68f, 0.98f));
+        box.AddChild(_introName);
+
+        _introBody = new Label
+        {
+            Position = new Vector2(20, 36),
+            Size = new Vector2(568, 78),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        Style(_introBody, 12, new Color(0.86f, 0.83f, 0.75f, 0.96f));
+        box.AddChild(_introBody);
+
+        _introFoot = new Label
+        {
+            Position = new Vector2(0, ViewH - 24),
+            Size = new Vector2(ViewW, 16),
+            Text = "Enter 继续　·　Esc 跳过",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_introFoot, 10, new Color(0.58f, 0.55f, 0.46f, 0.88f));
+        _introPanel.AddChild(_introFoot);
     }
 
     private void BuildHelp(CanvasLayer ui)
@@ -3130,6 +3910,7 @@ public partial class Main : Node2D
                 "看　　按住 Ctrl：把这一处能碰的东西全框出来\n" +
                 "选　　1–4 挑一项，Enter（或 E）落下\n" +
                 "囊　　I：打开 / 关上；方向键选格，X 或 Del 丢一件\n" +
+                "图　　M：去别处；↑↓ 选、Enter 走，按路程扣刻\n" +
                 "示　　G：对话里把囊中之物给他看；T：跟商人买卖\n" +
                 "信　　Tab：官望 / 民望 / 疑心，和两条攻城路线\n" +
                 "关　　Esc：关掉这一页；什么都没开时打开这份说明\n\n" +
@@ -3625,7 +4406,7 @@ public partial class Main : Node2D
         {
             var row = new Label
             {
-                Position = new Vector2(18, 70 + i * 22),
+                Position = new Vector2(18, 70 + i * 20),
                 Size = new Vector2(484, 20),
                 Text = "",
                 Visible = false,

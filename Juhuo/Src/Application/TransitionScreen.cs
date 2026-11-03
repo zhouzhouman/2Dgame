@@ -89,6 +89,45 @@ public static class TransitionText
     /// <summary>报告页的底注。</summary>
     public const string ReportFoot = "Enter 收下这份报告";
 
+    /// <summary>空着手转段时，那一行写这个。</summary>
+    public const string CarryNothing = "带走 空手";
+
+    /// <summary>钱在囊里叫"铜钱"，转段报告上只说"钱"——跟玩家嘴边那个字一致。</summary>
+    public const string CarryCoinName = "钱";
+
+    /// <summary>
+    /// 报告页那一行"带走"：<c>带走 粮 ×3、药 ×1、钱 17</c>。
+    ///
+    /// 念的是转段这一刻囊里真有的东西——**不另做一套存档字段**，
+    /// 交易换来的粮、药、钱本来就都在 <c>inventory</c> 里。
+    /// </summary>
+    /// <param name="bag">玩家的囊；null 或空囊时写<c>带走 空手</c>。</param>
+    /// <param name="catalog">物品表，用来取显示名。</param>
+    /// <returns>一行字。</returns>
+    public static string CarryLine(Inventory? bag, ItemCatalog? catalog)
+    {
+        if (bag == null || bag.SlotsUsed == 0) return CarryNothing;
+
+        var text = new System.Text.StringBuilder("带走 ");
+
+        for (var i = 0; i < bag.SlotsUsed; i++)
+        {
+            var slot = bag.Items[i];
+            if (i > 0) text.Append('、');
+
+            // 钱论"文"不论"件"，所以不写 ×：<c>钱 17</c>。
+            if (string.Equals(slot.Item, TradeBook.MoneyItem, StringComparison.Ordinal))
+            {
+                text.Append(CarryCoinName).Append(' ').Append(slot.N);
+                continue;
+            }
+
+            text.Append(BagPickup.NameOf(catalog, slot.Item)).Append(" ×").Append(slot.N);
+        }
+
+        return text.ToString();
+    }
+
     /// <summary>报告页下半页那五行：文档原句，直接念。</summary>
     public static readonly IReadOnlyList<string> ReportFixedLines = new[]
     {

@@ -360,6 +360,16 @@ public static class BagHud
     /// <returns>用掉 ≥ 上限 − 2 格时为真。</returns>
     public static bool Warn(Inventory? bag) =>
         bag != null && bag.SlotsUsed >= bag.Capacity - WarnWithin;
+
+    /// <summary>
+    /// 拼在囊计数后面的一句：<c>　钱 30</c>。
+    ///
+    /// 钱就在囊里（<c>coin</c> 那一格），这里只把数念出来——不另存一份"钱"的账。
+    /// </summary>
+    /// <param name="bag">玩家的囊。</param>
+    /// <returns><c>　钱 30</c>；没接囊就是空串。</returns>
+    public static string MoneySuffix(Inventory? bag) =>
+        bag == null ? "" : $"　钱 {bag.Count(TradeBook.MoneyItem)}";
 }
 
 /// <summary>
