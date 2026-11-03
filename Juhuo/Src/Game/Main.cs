@@ -264,6 +264,9 @@ public partial class Main : Node2D
     /// <summary>这一局是 <c>--bag</c> 自检（同样不碰玩家那份档）。</summary>
     private bool _bagRun;
 
+    /// <summary>这一次是不是自检/跑批：是的话一个玩家文件都不许写。</summary>
+    private bool _selfCheckRun;
+
     // —— 主菜单（S3-00）——
     /// <summary>启动时的命令行。菜单选完之后还要给 <see cref="BootWorld"/> 用。</summary>
     private string[] _args = Array.Empty<string>();
@@ -298,6 +301,14 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
             return;
         }
+
+        // 一次自检就是一次自检：带这些参数的运行不许碰玩家任何一份文件
+        // （存档由各 _xxxRun 各自把关，进度与截图类在这里统一拦）。
+        // 判据放宽到"只要带了 -- 参数就算自检"：逐个点名永远漏（--audit / --chain / --beats /
+        // --savetest / --hub= 都漏过），漏一个就会往玩家的档里写一笔。
+        // 只有这两个不算——它们不改变"这是一次正常启动"（见 WantsBootMenu 同一套口径）。
+        _selfCheckRun = _args.Any(a => a.StartsWith("--", StringComparison.Ordinal)
+                                       && a is not "--tutorial" and not "--no-tutorial");
 
         LoadProgress();
 
@@ -2756,6 +2767,7 @@ public partial class Main : Node2D
     {
         if (_world is null) return;
         if (_saveBlocked) return;      // 版本过新的那份不许被盖
+        if (_selfCheckRun) return;     // 自检/跑批一律不碰玩家的档（见 SaveProgress 同款注释）
 
         var state = _world.ToSaveState();
 
@@ -2904,8 +2916,10 @@ public partial class Main : Node2D
 
     private void SaveProgress()
     {
-        // 通关跑批会把七个空间各走一遍（LastHub 一路变），别拿它去改玩家那份进度。
-        if (_playthrough || _bagRun) return;
+        // 自检/跑批一律不写玩家进度。这条以前只挡了 --playthrough 与 --bag，
+        // 于是 `--tutrun` 每跑一次就把 tutorial_done 写成 1 ——
+        // 门禁越跑，玩家越看不到新手教程（玩家报的「没有教程」就是这么来的）。
+        if (_selfCheckRun) return;
 
         using var f = FileAccess.Open(ProgressPath, FileAccess.ModeFlags.Write);
         f?.StoreString(_progress.Serialize());
