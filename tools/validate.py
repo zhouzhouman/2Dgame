@@ -29,6 +29,8 @@
         招兵三档与 trust 引用
     E15 oaths.csv / realms.csv 表结构、id、誓约四件套非空、source 指得住一拍真选项、
         国号四个且不许撞真实朝代
+    E16 travel.csv / intro.csv / portraits.csv：42 个有向组合齐全且来回差 ≤2、
+        开场 6–10 句且 speaker/portrait 指得住 npcs.csv、30 行立绘参数在范围内且同 hub 不撞脸
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -87,6 +89,18 @@
       就立不住（兑现时不知道该赔给谁、赔多少）。故四列都非空，text 一并算进去。
     * E15 不许用真实朝代名当国号（汉唐宋明清元），也不许用旧朝国号「晟」（世界观 §2.1：
       国号大晟，都中州）。架空王朝顶着别人的国号，史官评语就没法写了。
+    * E16 的 travel.csv 是七个空间两两之间的刻数。42 组（7×6）必须齐：缺一组意味着玩家
+      走到那个出口就卡死；ke 限 1..6，因为一个 hub 的探索预算只有 8–20 刻，一趟路要走掉
+      一半预算就没人愿意出城了。来回允许不等（山道绕远、顺水下坡），但差超过 2 刻是硬错
+      ——同一段路两个方向差一倍，只可能是表填错了，不是地形。
+      每个 hub 至少一条进、一条出：孤岛比缺一组更难查。
+    * E16 的 intro.csv 是开场 6–10 句。speaker 为空 = 旁白，旁白不许挂立绘；非空必须是
+      npcs.csv 里的名字（否则这张脸没处取）。seq 必须从 1 连续——顺序是玩家读到的东西，
+      跳号说明中间删过一句还没补。
+    * E16 的 portraits.csv 必须覆盖 npcs.csv 的 30 处放置：沈砚与老鸦各出现两次，是同一
+      个人，两行的七个参数因此必须一致（不一致就是两个人长了同一张脸，或一个人换了两张）。
+      参数范围是美术规范里的枚举值，越界在引擎侧只会被夹到边界，看不出是内容写错了。
+      同一 hub 里不许两个人七个参数全同：立绘是玩家唯一的辨识手段，撞脸等于没画。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -163,6 +177,18 @@ REALM_ROWS = 4                             # 转段时给玩家挑的国号备�
 OATH_SOURCE = re.compile(r"^(b\d{2}):(\d{1,2})$")     # 拍 id : 选项序号（0 起）
 # 真实朝代名不许做国号；「晟」是旧朝国号（世界观 §2.1），同样不许
 REALM_FORBIDDEN_LABELS = {"汉", "唐", "宋", "明", "清", "元", "晟"}
+
+# E16：地图位移 / 开场介绍 / 立绘参数（三张手维护表）
+TRAVEL_COLS = ["from", "to", "ke", "note"]
+INTRO_COLS = ["seq", "speaker", "portrait", "text", "note"]
+PORTRAIT_COLS = ["npc", "skin", "hair", "style", "beard", "hat", "robe", "mark", "note"]
+TRAVEL_KE_MIN, TRAVEL_KE_MAX = 1, 6        # 一趟路最多 6 刻（hub 预算只有 8–20 刻）
+TRAVEL_PAIR_SLACK = 2                      # 来回差：山路/顺水可以有差，差一倍就是表错了
+INTRO_ROWS_MIN, INTRO_ROWS_MAX = 6, 10     # 开场 6–10 句
+PORTRAIT_ROWS = 30                         # npcs.csv 是 30 处放置（28 个唯一名）
+PORTRAIT_PARAMS = ("skin", "hair", "style", "beard", "hat", "robe", "mark")
+PORTRAIT_RANGES = {"skin": (1, 4), "hair": (1, 6), "style": (1, 4), "beard": (0, 3),
+                   "hat": (0, 4), "robe": (1, 6), "mark": (0, 4)}
 
 
 def need_kind(needs):
@@ -1058,6 +1084,211 @@ def check_oaths_realms(oaths_path, realms_path, beats_path):
     return errors
 
 
+def check_travel(path):
+    """E16：42 个有向组合齐全、hub 合法、ke 1..6、来回差 ≤2、每个 hub 有进有出。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E16", "-", "travel.csv", "-",
+                    "找不到 travel.csv（七个空间之间就没有赶路的刻度）")]
+
+    missing, rows = read_table(path, TRAVEL_COLS)
+    if missing:
+        return [Err("E16", "-", "travel.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    want = {(a, b) for a in HUBS for b in HUBS if a != b}
+    if len(rows) != len(want):
+        errors.append(Err("E16", "-", "travel.csv", "-",
+                          "行数应为 %d（7 个空间两两有向），实际 %d" % (len(want), len(rows))))
+
+    ke_of = {}
+    for n, r in enumerate(rows, start=2):
+        a = (r.get("from") or "").strip()
+        b = (r.get("to") or "").strip()
+        where = "第 %d 行" % n
+        who = "%s→%s" % (a or where, b or "?")
+
+        if a not in HUBS or b not in HUBS:
+            errors.append(Err("E16", "-", who, "-",
+                              "from/to 应在 %s..%s（实际 from=%r to=%r）"
+                              % (HUBS[0], HUBS[-1], a, b)))
+            continue
+        if a == b:
+            errors.append(Err("E16", a, who, "-", "from 与 to 相同（原地不必走）"))
+            continue
+        if (a, b) in ke_of:
+            errors.append(Err("E16", a, who, "-", "同一对重复（前面已经写过一次）"))
+            continue
+
+        ke, why = parse_coord(r.get("ke"))
+        if why:
+            errors.append(Err("E16", a, who, "-", "ke %s（要整数刻数）" % why))
+        elif not TRAVEL_KE_MIN <= ke <= TRAVEL_KE_MAX:
+            errors.append(Err("E16", a, who, "-",
+                              "ke=%d 应在 %d..%d（一趟路要走掉半个 hub 的预算就没人出城了）"
+                              % (ke, TRAVEL_KE_MIN, TRAVEL_KE_MAX)))
+        else:
+            ke_of[(a, b)] = ke
+
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E16", a, who, "-",
+                              "note 为空（远近与绕路的依据要写在这，尤其是来回不等的）"))
+
+    for a, b in sorted(want - set(ke_of)):
+        errors.append(Err("E16", a, "%s→%s" % (a, b), "-",
+                          "缺这一组（7×6 要齐，缺一组这个出口就走不通）"))
+
+    for hub in HUBS:
+        if not any(a == hub for a, _ in ke_of):
+            errors.append(Err("E16", hub, "travel.csv", "-", "没有任何一条从这里出发（走不出去）"))
+        if not any(b == hub for _, b in ke_of):
+            errors.append(Err("E16", hub, "travel.csv", "-", "没有任何一条走进这里（进不来）"))
+
+    for a in HUBS:
+        for b in HUBS:
+            if a >= b:
+                continue
+            ab, ba = ke_of.get((a, b)), ke_of.get((b, a))
+            if ab is not None and ba is not None and abs(ab - ba) > TRAVEL_PAIR_SLACK:
+                errors.append(Err("E16", a, "%s↔%s" % (a, b), "-",
+                                  "来回差 %d 刻（去 %d / 回 %d），超过 %d 刻说明表写错了"
+                                  "（山路可以有差，但不会差一倍）"
+                                  % (abs(ab - ba), ab, ba, TRAVEL_PAIR_SLACK)))
+    return errors
+
+
+def check_intro(path, npc_names):
+    """E16：seq 从 1 连续、行数 6..10、speaker/portrait 指得住 npcs.csv、旁白不挂立绘。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E16", "-", "intro.csv", "-", "找不到 intro.csv（开场就没词了）")]
+
+    missing, rows = read_table(path, INTRO_COLS)
+    if missing:
+        return [Err("E16", "-", "intro.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    if not INTRO_ROWS_MIN <= len(rows) <= INTRO_ROWS_MAX:
+        errors.append(Err("E16", "-", "intro.csv", "-",
+                          "行数应在 %d..%d，实际 %d" % (INTRO_ROWS_MIN, INTRO_ROWS_MAX, len(rows))))
+
+    for i, r in enumerate(rows, start=1):
+        seq = (r.get("seq") or "").strip()
+        speaker = (r.get("speaker") or "").strip()
+        portrait = (r.get("portrait") or "").strip()
+        who = "seq:%s" % (seq or "第 %d 行" % (i + 1))
+
+        got, why = parse_coord(seq)
+        if why or got != i:
+            errors.append(Err("E16", "-", "intro.csv", who,
+                              "seq 应连续从 1 起（第 %d 行应为 %d，实际 %r）" % (i, i, seq)))
+
+        if speaker and speaker not in npc_names:
+            errors.append(Err("E16", "-", who, "-",
+                              "speaker %r 不在 npcs.csv（这句话没有人能说）" % speaker))
+        if portrait and portrait not in npc_names:
+            errors.append(Err("E16", "-", who, "-",
+                              "portrait %r 不在 npcs.csv（这张立绘没处取）" % portrait))
+        if not speaker and portrait:
+            errors.append(Err("E16", "-", who, "-",
+                              "旁白（speaker 为空）不该挂立绘 %r" % portrait))
+        if not (r.get("text") or "").strip():
+            errors.append(Err("E16", "-", who, "-", "text 为空"))
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E16", "-", who, "-",
+                              "note 为空（出处要写在这：文档节号或 npcs.csv 行）"))
+    return errors
+
+
+def check_portraits(path, npcs):
+    """E16：30 行、名字与 npcs.csv 一一对上、参数在范围内、同 hub 不许两人七参数全同。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E16", "-", "portraits.csv", "-",
+                    "找不到 portraits.csv（所有 NPC 只能共用一张脸）")]
+
+    missing, rows = read_table(path, PORTRAIT_COLS)
+    if missing:
+        return [Err("E16", "-", "portraits.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    if len(rows) != PORTRAIT_ROWS:
+        errors.append(Err("E16", "-", "portraits.csv", "-",
+                          "行数应为 %d（npcs.csv 的 30 处放置），实际 %d"
+                          % (PORTRAIT_ROWS, len(rows))))
+
+    placed = Counter((r.get("name") or "").strip() for r in npcs)
+    placed.pop("", None)
+    hubs_of = {}
+    for r in npcs:
+        name = (r.get("name") or "").strip()
+        hub = (r.get("hub") or "").strip()
+        if name and hub in HUBS:
+            hubs_of.setdefault(name, set()).add(hub)
+
+    params_of = {}          # 名字 -> 七元组（同一人两处放置只留第一次）
+    seen = Counter()
+    for n, r in enumerate(rows, start=2):
+        name = (r.get("npc") or "").strip()
+        where = "第 %d 行" % n
+        seen[name] += 1
+
+        if name not in placed:
+            errors.append(Err("E16", "-", "portraits:" + (name or where), "-",
+                              "npc %r 不在 npcs.csv" % name))
+            continue
+
+        vals = []
+        for col in PORTRAIT_PARAMS:
+            lo, hi = PORTRAIT_RANGES[col]
+            val, why = parse_coord(r.get(col))
+            if why:
+                errors.append(Err("E16", "-", name, "-", "%s %s（只收整数）" % (col, why)))
+                vals.append(None)
+            elif not lo <= val <= hi:
+                errors.append(Err("E16", "-", name, "-",
+                                  "%s=%d 应在 %d..%d" % (col, val, lo, hi)))
+                vals.append(None)
+            else:
+                vals.append(val)
+
+        if None not in vals:
+            seven = tuple(vals)
+            if name in params_of and params_of[name] != seven:
+                errors.append(Err("E16", "-", name, "-",
+                                  "同一个人在 %s 与别处被放置，两次的立绘参数不一致"
+                                  "（%r / %r）——要么是同两个人，要么是同一个人换了两张脸"
+                                  % ("、".join(sorted(hubs_of.get(name, {"?"}))),
+                                     params_of[name], seven)))
+            params_of.setdefault(name, seven)
+
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E16", "-", name or where, "-",
+                              "note 为空（依据要写在这：台词或身份）"))
+
+    for name in sorted(placed):
+        if not seen.get(name):
+            errors.append(Err("E16", "-", "portraits:" + name, "-",
+                              "npcs.csv 里有这个名字，这里没有立绘参数"))
+        elif seen[name] != placed[name]:
+            errors.append(Err("E16", "-", "portraits:" + name, "-",
+                              "npcs.csv 里放置 %d 次，这里 %d 行（同一人多处放置要各写一行）"
+                              % (placed[name], seen[name])))
+
+    # 同 hub 不许两个人七个参数全同：立绘是玩家唯一的辨识手段，撞脸等于没画
+    by_hub = {}
+    for name, seven in params_of.items():
+        for hub in hubs_of.get(name, ()):
+            by_hub.setdefault(hub, []).append((name, seven))
+    for hub in HUBS:
+        people = by_hub.get(hub, [])
+        for i in range(len(people)):
+            for j in range(i + 1, len(people)):
+                a, ta = people[i]
+                b, tb = people[j]
+                if a != b and ta == tb:
+                    errors.append(Err("E16", hub, "%s/%s" % (a, b), "-",
+                                      "七个参数完全相同 %r，同一 hub 里分不清谁是谁" % (ta,)))
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
@@ -1259,13 +1490,19 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
                                      os.path.join(data_dir, "realms.csv"),
                                      os.path.join(data_dir, "beats.csv")))
 
+    # —— E16 地图位移 / 开场介绍 / 立绘参数 ——
+    errors.extend(check_travel(os.path.join(data_dir, "travel.csv")))
+    errors.extend(check_intro(os.path.join(data_dir, "intro.csv"),
+                              {name for _hub, name in npc_names}))
+    errors.extend(check_portraits(os.path.join(data_dir, "portraits.csv"), npcs))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
-          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 两份 points 同源")
+          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 位移/开场/立绘 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -1456,6 +1693,38 @@ def _selftest_e15(tmp):
     return src_hit and name_hit
 
 
+def _selftest_e16(tmp):
+    """E16 自测：travel 少一组 + intro 的 speaker 不存在 + portraits 参数越界。"""
+    _, npcs = read_table(os.path.join(DEFAULT_DATA, "npcs.csv"), NPC_COLS)
+    names = {(r.get("name") or "").strip() for r in npcs}
+    names.discard("")
+
+    _, travel = read_table(os.path.join(DEFAULT_DATA, "travel.csv"), TRAVEL_COLS)
+    _, intro = read_table(os.path.join(DEFAULT_DATA, "intro.csv"), INTRO_COLS)
+    _, portraits = read_table(os.path.join(DEFAULT_DATA, "portraits.csv"), PORTRAIT_COLS)
+
+    bad_travel = [dict(r) for r in travel][:-1]      # 少一组有向组合
+    bad_intro = [dict(r) for r in intro]
+    bad_intro[0]["speaker"] = "没有这个人"            # 没有人能说这句话
+    bad_portraits = [dict(r) for r in portraits]
+    bad_portraits[0]["skin"] = "9"                   # 肤色只有 1..4
+
+    d = os.path.join(tmp, "e16")
+    os.makedirs(d)
+    _write_csv(os.path.join(d, "travel.csv"), TRAVEL_COLS, bad_travel)
+    _write_csv(os.path.join(d, "intro.csv"), INTRO_COLS, bad_intro)
+    _write_csv(os.path.join(d, "portraits.csv"), PORTRAIT_COLS, bad_portraits)
+
+    travel_msgs = [e.msg for e in check_travel(os.path.join(d, "travel.csv"))]
+    intro_msgs = [e.msg for e in check_intro(os.path.join(d, "intro.csv"), names)]
+    portrait_msgs = [e.msg for e in check_portraits(os.path.join(d, "portraits.csv"), npcs)]
+
+    pair_hit = any("缺这一组" in m for m in travel_msgs)
+    speaker_hit = any("不在 npcs.csv" in m for m in intro_msgs)
+    range_hit = any("skin=" in m for m in portrait_msgs)
+    return pair_hit and speaker_hit and range_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -1492,7 +1761,9 @@ def selftest():
                            ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
                            ("shops.csv", SHOP_COLS), ("siege.csv", SIEGE_COLS),
                            ("recruit.csv", RECRUIT_COLS), ("oaths.csv", OATH_COLS),
-                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS)):
+                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS),
+                           ("travel.csv", TRAVEL_COLS), ("intro.csv", INTRO_COLS),
+                           ("portraits.csv", PORTRAIT_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -1532,6 +1803,10 @@ def selftest():
             print("[selftest] 誓约/国号 E15 未报出")
             return 1
         print("[selftest] 誓约/国号 E15 1/1")
+        if not _selftest_e16(tmp):
+            print("[selftest] 位移/开场/立绘 E16 未报出")
+            return 1
+        print("[selftest] 位移/开场/立绘 E16 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -1546,7 +1821,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09/E10/E11/E12/E13/E14/E15 各一处")
+                    help="造错样本：E01–E05 五个 + E09..E16 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")
