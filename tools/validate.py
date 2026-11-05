@@ -35,6 +35,9 @@
         教学步骤（tutorial.csv）：beats.goal 十二拍非空且 ≤14 字、companions 六行且 id 与
         office 不重复、name 在 npcs.csv 里、loyalty/ambition 1–100、goals 三档齐全、
         tutorial 的 key 顺序与 Onboarding.Stage 对得上
+    E18 每拍去哪 / 怎么走（beats.target + beats.hint）：target 只认 exit / point:<id> /
+        npc:<名> / hub:<id> / 空；point 与 npc 必须真实存在且与本拍同一 hub；hub 必须是
+        hub1..hub7；hint 非空且 ≤25 字
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -118,6 +121,12 @@
       （目前是 map / bag / trust 三步），但 Onboarding 里有的每一步，表里都必须有、且顺序
       一致。对不上的后果是玩家会看到一段教了却验不了的提示，或者走完五步之后卡住不动。
       顺序判的是「子序列」：Onboarding 后续补上 Stage.Map / Bag / Trust 也仍然成立。
+    * E18 的 beats.target 是「这一刻那个黄点戳在哪」，不是又一句目标：玩家读完 goal 知道
+      该干什么，抬头要能看见一个具体的框。只认五种写法——exit（本空间出口）、point:<id>
+      （搜查点）、npc:<名>、hub:<id>（目标在别的空间，配合按 M 走）、空（纯决策拍）。
+      point 与 npc 必须和本拍同一 hub：指到别的空间，黄点就落在走不到的地方。
+    * E18 的 beats.hint 是「怎么去 / 按什么 / 找谁」，≤25 字。写成剧情复述等于没写——
+      玩家缺的从来不是"发生了什么"，是"我现在该往哪走、站在哪儿按什么键"。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -221,6 +230,10 @@ COMPANION_EXCLUDED = {"柳三娘": "她走商路、不参与分封（§18.4 有�
 TUTORIAL_KEYS = ("move", "look", "search", "map", "bag", "trust", "talk", "leave")
 TUTORIAL_ROWS = len(TUTORIAL_KEYS)                # 走/看/搜 + 地图/囊/信任 + 说/出 = 8 步
 TUTORIAL_INSERTED = ("map", "bag", "trust")
+
+# E18：每拍去哪（target）+ 一句话怎么走（hint）
+TARGET_COLS = ["target", "hint"]
+HINT_TEXT_MAX = 25                               # 再长就是复述剧情，不是「怎么走」
 ONBOARDING_CS = os.path.join(ROOT, "Juhuo", "Src", "Game", "Onboarding.cs")
 STAGE_ENUM = re.compile(r"enum\s+Stage\s*\{([^}]*)\}", re.S)
 
@@ -1414,6 +1427,88 @@ def check_beat_goals(path):
     return errors
 
 
+def check_beat_targets(path, points, npcs):
+    """E18：每拍一个具体目标 + 一句「怎么走」。
+
+    target 只认五种：exit / point:<id> / npc:<名> / hub:<id> / 空。
+    point 与 npc 必须真实存在、且与本拍同一 hub——指到别的空间，黄点落在走不到的地方。
+    hint 是「怎么去 / 按什么 / 找谁」，不是剧情复述：非空、≤25 字。
+    """
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E18", "-", "beats.csv", "-", "找不到 beats.csv")]
+
+    missing, rows = read_table(path, BEATS_COLS + TARGET_COLS)
+    if missing:
+        return [Err("E18", "-", "beats.csv", "-",
+                    "表头缺列：%s" % ", ".join(missing))]
+
+    point_hub = {}
+    for r in points:
+        pid = (r.get("id") or "").strip()
+        if pid:
+            point_hub[pid] = (r.get("hub") or "").strip()
+    npc_hubs = {}
+    for r in npcs:
+        name = (r.get("name") or "").strip()
+        if name:
+            npc_hubs.setdefault(name, set()).add((r.get("hub") or "").strip())
+
+    for n, r in enumerate(rows, start=2):
+        bid = (r.get("id") or "").strip() or "第 %d 行" % n
+        hub = (r.get("hub") or "?").strip()
+        target = (r.get("target") or "").strip()
+        hint = (r.get("hint") or "").strip()
+
+        # —— hint：怎么去，不是复述剧情 ——
+        if not hint:
+            errors.append(Err("E18", hub, bid, "-",
+                              "hint 为空（黄点指着一处地方，玩家还是不知道该按什么）"))
+        elif len(hint) > HINT_TEXT_MAX:
+            errors.append(Err("E18", hub, bid, "-",
+                              "hint 有 %d 字，超过 %d 字——这么长写的是剧情，"
+                              "不是「往哪走、按什么」" % (len(hint), HINT_TEXT_MAX)))
+
+        # —— target：只认五种写法 ——
+        if not target or target == "exit":
+            continue
+        if target.startswith("point:"):
+            pid = target[len("point:"):].strip()
+            if not pid:
+                errors.append(Err("E18", hub, bid, "-", "point: 后面没写 id"))
+            elif pid not in point_hub:
+                errors.append(Err("E18", hub, bid, "-",
+                                  "target 指向 %r，points.csv 里没有这个点（黄点无处可落）"
+                                  % pid))
+            elif point_hub[pid] != hub:
+                errors.append(Err("E18", hub, bid, "-",
+                                  "target 的 %s 在 %s，本拍在 %s——黄点指到别的空间去了"
+                                  % (pid, point_hub[pid] or "?", hub)))
+        elif target.startswith("npc:"):
+            name = target[len("npc:"):].strip()
+            if not name:
+                errors.append(Err("E18", hub, bid, "-", "npc: 后面没写名字"))
+            elif name not in npc_hubs:
+                errors.append(Err("E18", hub, bid, "-",
+                                  "target 指向 %r，npcs.csv 里没有这个人（黄点无处可落）"
+                                  % name))
+            elif hub not in npc_hubs[name]:
+                errors.append(Err("E18", hub, bid, "-",
+                                  "target 的 %s 在 %s，本拍在 %s"
+                                  % (name, "、".join(sorted(npc_hubs[name])), hub)))
+        elif target.startswith("hub:"):
+            dest = target[len("hub:"):].strip()
+            if dest not in HUBS:
+                errors.append(Err("E18", hub, bid, "-",
+                                  "target 的 hub:%s 不在 %s..%s"
+                                  % (dest or "?", HUBS[0], HUBS[-1])))
+        else:
+            errors.append(Err("E18", hub, bid, "-",
+                              "target %r 不是这五种写法之一"
+                              "（exit / point:<id> / npc:<名> / hub:<id> / 空）" % target))
+    return errors
+
+
 def check_companions(path, npc_names):
     """E17：六行、id / office / name 不重复、忠诚与野心 1..100、名字在 npcs.csv 里。"""
     errors = []
@@ -1803,6 +1898,7 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     # —— E17 一句话目标 / 六功臣 / 三句总目标 / 教学步骤 ——
     if beats_path:
         errors.extend(check_beat_goals(beats_path))
+        errors.extend(check_beat_targets(beats_path, points, npcs))
     errors.extend(check_companions(os.path.join(data_dir, "companions.csv"),
                                    {name for _hub, name in npc_names}))
     errors.extend(check_goals(os.path.join(data_dir, "goals.csv")))
@@ -1815,7 +1911,7 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
           "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 位移/开场/立绘 + "
-          "目标/功臣/教学 + 两份 points 同源")
+          "目标/功臣/教学 + 目标点/提示 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -2076,6 +2172,34 @@ def _selftest_e17(tmp):
     return short_hit and office_hit and goal_hit
 
 
+def _selftest_e18(tmp):
+    """E18 自测：点不在本 hub + 人不存在 + target 瞎写，三处都必须报出。"""
+    _, points = read_table(os.path.join(DEFAULT_DATA, "points.csv"), POINT_COLS)
+    _, npcs = read_table(os.path.join(DEFAULT_DATA, "npcs.csv"), NPC_COLS)
+    cols = BEATS_COLS + ["goal"] + TARGET_COLS
+    _, beats = read_table(os.path.join(DEFAULT_DATA, "beats.csv"), cols)
+
+    bad = [dict(r) for r in beats]
+    for r in bad:
+        if r["id"] == "b01":
+            r["target"] = "point:h2_01"          # 废驿的点，却写在 hub1 那一拍
+        elif r["id"] == "b07":
+            r["target"] = "npc:没有这个人"
+        elif r["id"] == "b03":
+            r["target"] = "马路对面"
+
+    d = os.path.join(tmp, "e18")
+    os.makedirs(d)
+    path = os.path.join(d, "beats.csv")
+    _write_csv(path, cols, bad)
+    msgs = [e.msg for e in check_beat_targets(path, points, npcs)]
+
+    hub_hit = any("h2_01" in m and "本拍在 hub1" in m for m in msgs)
+    npc_hit = any("没有这个人" in m for m in msgs)
+    junk_hit = any("五种写法" in m for m in msgs)
+    return hub_hit and npc_hit and junk_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -2112,7 +2236,7 @@ def selftest():
                            ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
                            ("shops.csv", SHOP_COLS), ("siege.csv", SIEGE_COLS),
                            ("recruit.csv", RECRUIT_COLS), ("oaths.csv", OATH_COLS),
-                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS + ["goal"]),
+                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS + ["goal"] + TARGET_COLS),
                            ("travel.csv", TRAVEL_COLS), ("intro.csv", INTRO_COLS),
                            ("portraits.csv", PORTRAIT_COLS),
                            ("companions.csv", COMPANION_COLS), ("goals.csv", GOAL_COLS),
@@ -2164,6 +2288,10 @@ def selftest():
             print("[selftest] 目标/功臣/教学 E17 未报出")
             return 1
         print("[selftest] 目标/功臣/教学 E17 1/1")
+        if not _selftest_e18(tmp):
+            print("[selftest] 目标点/提示 E18 未报出")
+            return 1
+        print("[selftest] 目标点/提示 E18 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -2178,7 +2306,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09..E17 各一处")
+                    help="造错样本：E01–E05 五个 + E09..E18 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")

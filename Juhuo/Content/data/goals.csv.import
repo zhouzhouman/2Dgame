@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://cpy73i05foyd4"
+
+[deps]
+
+files=["res://Content/data/goals.text.translation", "res://Content/data/goals.note.translation"]
+
+source_file="res://Content/data/goals.csv"
+dest_files=["res://Content/data/goals.text.translation", "res://Content/data/goals.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

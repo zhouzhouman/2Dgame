@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dmc43stx52jj3"
+
+[deps]
+
+files=["res://Content/data/tutorial.key.translation", "res://Content/data/tutorial.title.translation", "res://Content/data/tutorial.hint.translation", "res://Content/data/tutorial.note.translation"]
+
+source_file="res://Content/data/tutorial.csv"
+dest_files=["res://Content/data/tutorial.key.translation", "res://Content/data/tutorial.title.translation", "res://Content/data/tutorial.hint.translation", "res://Content/data/tutorial.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

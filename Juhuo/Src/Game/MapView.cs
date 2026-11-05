@@ -22,6 +22,15 @@ public partial class MapView : Node2D
     private World _world = default!;
     private BakedMap _baked = default!;
 
+    /// <summary>这一拍的目标点（S4-03b）：黄色菱形 / 边缘箭头都从它来。</summary>
+    private Objective _objective = Objective.Empty;
+
+    /// <summary>目标在**当前空间**的哪一格；不在本空间或指不出来时为 null。</summary>
+    private Vector2? _objectiveCell;
+
+    /// <summary>画"到了"两个字用的字体。由 Main 把 HUD 那份字体递进来，不在这里再加载一次。</summary>
+    public Font? MarkerFont { get; set; }
+
     private float _time;
     private bool _highlight;
     public bool ForceHighlight { get; set; }
@@ -74,6 +83,21 @@ public partial class MapView : Node2D
     {
         _baked = baked;
         _lastPlayerCell = new Vector2(-99, -99);
+        _objectiveCell = null;
+        QueueRedraw();
+    }
+
+    /// <summary>
+    /// 换一拍（或换了空间）：告诉地图现在该指哪。
+    /// 落点每帧重算，所以这里只收"指什么"，不收坐标。
+    /// </summary>
+    /// <param name="objective">当前这一拍的目标点。</param>
+    public void SetObjective(Objective objective)
+    {
+        if (_objective == objective) return;
+
+        _objective = objective;
+        _objectiveCell = null;
         QueueRedraw();
     }
 
@@ -86,6 +110,10 @@ public partial class MapView : Node2D
 
         _world.Update(dt);
         HandleMovement(dt);
+
+        // 目标点每帧重算落点：NPC 会走，换空间时坐标也全变了。
+        // 指不出来（目标在别处 / 根本没目标）就是 null，画的时候自然什么都不画。
+        _objectiveCell = _world.LocateObjective(_objective);
 
         var near = _world.Nearest();
         if (!ReferenceEquals(near, _near))
@@ -307,7 +335,9 @@ public partial class MapView : Node2D
         foreach (var g in _world.Guards) DrawGuard(g);
 
         DrawPlayer();
+        DrawObjective();
         DrawExitArrow();
+        DrawObjectiveArrow();
 
         // 没按 Ctrl 时，只有伸手能碰到的那一件会亮框
         if (_near is not null && !_highlight)
@@ -473,6 +503,116 @@ public partial class MapView : Node2D
             var end = back + perp * 5f * s * side;
             DrawLine(tip, end, col, w);
         }
+    }
+
+    // ————————————————————————— 目标点（S4-03b）—————————————————————————
+
+    /// <summary>暖黄（#F2C14E）。亮地面上也压得住，夜里不刺眼。</summary>
+    private static readonly Color MarkerYellow = new(0.949f, 0.757f, 0.306f);
+
+    /// <summary>描边用的深褐。草地上、土路上都能把菱形托出来。</summary>
+    private static readonly Color MarkerInk = new(0.13f, 0.10f, 0.05f, 0.9f);
+
+    /// <summary>呼吸周期（秒）：上下浮动 2 像素 + 轻微缩放。</summary>
+    private const float MarkerBreath = 1.2f;
+
+    /// <summary>
+    /// 世界里的黄色菱形：画在目标格**上方 0.6 格**，跟着世界一起被裁。
+    ///
+    /// 走近 1.5 格变实心，并在旁边写"到了"——玩家不用再猜"是不是站对了地方"。
+    /// 目标在别的空间、或者指不出来时不画，交给目标行下面那句"按 M 过去"。
+    /// </summary>
+    private void DrawObjective()
+    {
+        if (!_objectiveCell.HasValue) return;
+
+        var cell = _objectiveCell.Value;
+        var s = _baked.Scale;
+        var center = Screen(cell, 0f, -0.6f * T);
+
+        var phase = Mathf.Sin(_time * (Mathf.Tau / MarkerBreath));
+        center.Y += phase * 2f;                       // 上下浮动 2 像素
+        var breath = 1f + 0.07f * phase;              // 每 1.2 秒轻微缩放
+
+        var arrived = ObjectiveHud.IsArrived(
+            _world.Player.Cell.X, _world.Player.Cell.Y, cell.X, cell.Y);
+
+        // 8×8 的方块转 45°：半对角线 = 4√2 ≈ 5.66
+        var r = 5.66f * s * breath;
+        var pts = new[]
+        {
+            new Vector2(center.X, center.Y - r),
+            new Vector2(center.X + r, center.Y),
+            new Vector2(center.X, center.Y + r),
+            new Vector2(center.X - r, center.Y),
+        };
+
+        // 没到之前是一层很淡的光晕，到了就收掉，只留实心菱形
+        if (!arrived)
+            DrawCircle(center, r * 1.9f, new Color(MarkerYellow.R, MarkerYellow.G, MarkerYellow.B, 0.10f));
+
+        var fill = arrived
+            ? MarkerYellow
+            : new Color(MarkerYellow.R, MarkerYellow.G, MarkerYellow.B, 0.55f);
+        DrawColoredPolygon(pts, fill);
+
+        var outline = new Vector2[5];
+        Array.Copy(pts, outline, 4);
+        outline[4] = pts[0];
+        DrawPolyline(outline, MarkerInk, Mathf.Max(1f, 1.1f * s));
+
+        if (arrived) DrawArrivedWord(center, r, s);
+    }
+
+    /// <summary>菱形旁边那两个字。先画一遍深色错位字，亮地面上也读得清。</summary>
+    private void DrawArrivedWord(Vector2 center, float r, int s)
+    {
+        if (MarkerFont is null) return;
+
+        var font = MarkerFont;
+        var size = Mathf.Max(9, Mathf.RoundToInt(9f * s));
+        var width = 48f * s;
+        var x = center.X - width / 2f;
+        var y = center.Y - r - 4f * s;
+
+        DrawString(font, new Vector2(x + 1f, y + 1f), ObjectiveText.ArrivedWord,
+            HorizontalAlignment.Center, width, size, new Color(0.10f, 0.08f, 0.04f, 0.85f));
+        DrawString(font, new Vector2(x, y), ObjectiveText.ArrivedWord,
+            HorizontalAlignment.Center, width, size, new Color(0.99f, 0.93f, 0.72f, 0.97f));
+    }
+
+    /// <summary>
+    /// 目标在视口外时，换一枚屏幕内缘的小三角，指过去。
+    /// 画在菱形之后：它本来就不该被地面上的东西挡住。
+    /// </summary>
+    private void DrawObjectiveArrow()
+    {
+        if (!_objectiveCell.HasValue) return;
+
+        var cell = _objectiveCell.Value;
+        var p = Screen(cell, 0f, -0.6f * T);
+
+        var onScreen = p.X >= 0f && p.X <= _baked.ViewW && p.Y >= 0f && p.Y <= _baked.ViewH;
+        if (ObjectiveHud.Decide(_objective, _objectiveCell.HasValue, onScreen) != ObjectiveView.ScreenArrow)
+            return;
+
+        if (!ObjectiveArrow.TryPlace(p.X, p.Y, _baked.ViewW, _baked.ViewH, ObjectiveArrow.Margin, out var a))
+            return;
+
+        var s = _baked.Scale;
+        var dir = new Vector2(a.DirX, a.DirY);
+        var perp = new Vector2(-dir.Y, dir.X);
+        var mid = new Vector2(a.X, a.Y);
+
+        var tip = mid + dir * (a.Length * 0.5f);
+        var back = mid - dir * (a.Length * 0.5f);
+        var halfW = Mathf.Max(4f, 3.6f * s);
+
+        var tri = new[] { tip, back + perp * halfW, back - perp * halfW };
+        DrawColoredPolygon(tri, MarkerYellow);
+
+        var outline = new[] { tip, back + perp * halfW, back - perp * halfW, tip };
+        DrawPolyline(outline, MarkerInk, Mathf.Max(1f, 1f * s));
     }
 
     /// <summary>被发现时四边泛红。不用弹窗，弹窗会把玩家从场景里拽出来。</summary>

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://bktmayrygeq5x"
+
+[deps]
+
+files=["res://Content/data/companions.name.translation", "res://Content/data/companions.office.translation", "res://Content/data/companions.role.translation", "res://Content/data/companions.loyalty.translation", "res://Content/data/companions.ambition.translation", "res://Content/data/companions.note.translation"]
+
+source_file="res://Content/data/companions.csv"
+dest_files=["res://Content/data/companions.name.translation", "res://Content/data/companions.office.translation", "res://Content/data/companions.role.translation", "res://Content/data/companions.loyalty.translation", "res://Content/data/companions.ambition.translation", "res://Content/data/companions.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

@@ -89,6 +89,12 @@ public partial class Main : Node2D
     /// <summary>顶部那一行"目标　活过今夜"。与天数/刻分开一行，字号略大一点。</summary>
     private Label _goalLine = default!;
 
+    /// <summary>目标行下面那行小字：<c>怎么去　…</c> / <c>在 县城 · 按 M 过去（2 刻）</c>（S4-03b）。</summary>
+    private Label _hintLine = default!;
+
+    /// <summary>beats.csv 的 target / hint 两列（S4-03b）。表里没这两列时是空表，照常能玩。</summary>
+    private ObjectiveTable _objectives = ObjectiveTable.Empty;
+
     /// <summary>开局那张卡的状态机：2.5 秒 / 任意键自己走，不挡键。</summary>
     private readonly GoalCard _goalCard = new();
     private Panel _goalCardPanel = default!;
@@ -486,7 +492,12 @@ public partial class Main : Node2D
             _bagPanel = new BagPanel(_world.Bag, _items);
 
             // 十二节拍：表是数据，状态机是 Core，接法是本票（S1-06c）。
-            _beatTable = BeatTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/beats.csv"));
+            var beatsCsv = FileAccess.GetFileAsString("res://Content/data/beats.csv");
+            _beatTable = BeatTable.FromCsv(beatsCsv);
+
+            // 目标点（S4-03b）：同一张 beats.csv 的 target / hint 两列。
+            // 旧表没有这两列时读成空表——不崩、不挡路，只是没有黄点和提醒。
+            _objectives = ObjectiveTable.FromCsv(beatsCsv);
 
             // 目标表（S4-01c）：HUD 那一行与开局卡都读这一份，代码里不留第二份中文。
             _goals = GoalTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/goals.csv"));
@@ -929,6 +940,25 @@ public partial class Main : Node2D
             {
                 // 带上玩家所在的 hub：当前那一拍在别处时，表里补一句该往哪走。
                 foreach (var line in _beats.DescribeTable(_world?.Hub)) GD.Print(line);
+            }
+
+            _quitAfterFrame = true;
+        }
+
+        // 开发辅助：--objective 打印十二拍各自的目标点解析结果，然后退出（S4-03b）
+        if (OS.GetCmdlineUserArgs().Contains("--objective"))
+        {
+            if (_beats is null || _world is null)
+            {
+                GD.Print("[目标点] 没有节拍表：beats.csv 读不进来。");
+                _exitCode = 1;
+            }
+            else
+            {
+                // id / 点位归属 / 路程全部问真数据，这里一个地名都不写死。
+                foreach (var line in ObjectiveReport.Lines(
+                             _beats.Table, _objectives, _world.HubOfPoint, _world.TravelCostTo))
+                    GD.Print(line);
             }
 
             _quitAfterFrame = true;
@@ -1510,6 +1540,9 @@ public partial class Main : Node2D
 
         _tutKey.Text = key;
         _tutText.Text = text;
+
+        // 教学条变了，"怎么去"那行也要跟着换（教学期间它整行空着）。
+        UpdateHintLine();
     }
 
     private bool AtExitHere()
@@ -1530,6 +1563,7 @@ public partial class Main : Node2D
             _view = new MapView();
             AddChild(_view);
             _view.Setup(_world, baked);
+            _view.MarkerFont = _font;      // 目标点旁边"到了"用同一份字体（S4-03b）
 
             _view.TextShown += ShowText;
             _view.TextClosed += CloseBox;
@@ -1796,6 +1830,8 @@ public partial class Main : Node2D
         }
 
         UpdateGoalLine();
+        PushObjective();
+        UpdateHintLine();
     }
 
     /// <summary>
@@ -1820,6 +1856,43 @@ public partial class Main : Node2D
 
         _goalLine.Text = line;
         GD.Print($"[目标] {text}");
+    }
+
+    // ————————————————————————— 目标点（S4-03b）—————————————————————————
+
+    /// <summary>
+    /// 当前这一拍的目标点。没有正等着的一拍（十二拍走完 / 转段）时是 <see cref="Objective.Empty"/>。
+    /// </summary>
+    private Objective CurrentObjective()
+    {
+        var beat = _beats?.Current;
+        if (beat is null) return Objective.Empty;
+        return _objectives.Of(beat.Id);
+    }
+
+    /// <summary>把目标点递给地图：黄菱形、边缘箭头都由它决定画不画。</summary>
+    private void PushObjective()
+    {
+        if (_view is null) return;
+        _view.SetObjective(CurrentObjective());
+    }
+
+    /// <summary>
+    /// 目标行下面那行小字（S4-03b）。
+    ///
+    /// 三种情形：有 hint 写"怎么去　…"；目标在别的空间写"在 县城 · 按 M 过去（2 刻）"；
+    /// 八步教学没走完时整行空着——底下那条教学条已经在说同一件事，不重复。
+    /// </summary>
+    private void UpdateHintLine()
+    {
+        if (_hintLine is null || _world is null) return;
+
+        var objective = CurrentObjective();
+        var cost = objective.Kind == TargetKind.Hub ? _world.TravelCostTo(objective.Id) : 0;
+        var text = ObjectiveText.HintRow(objective, _tut is { Done: false }, cost);
+
+        _hintLine.Text = text;
+        _hintLine.Visible = text.Length > 0;
     }
 
     // ————————————————————————— 囊 —————————————————————————
@@ -4271,6 +4344,18 @@ public partial class Main : Node2D
         Style(_goalLine, 12, new Color(0.96f, 0.86f, 0.60f, 0.97f));
         ui.AddChild(_goalLine);
 
+        // 目标行下面那行小字（S4-03b）："怎么去　…"，比目标小一号、淡一点。
+        // 没有 hint 就整行收起来，不留一条空档——顶上空着一行比不写更奇怪。
+        _hintLine = new Label
+        {
+            Position = new Vector2(228, 58),
+            Size = new Vector2(ViewW - 240, 16),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visible = false,
+        };
+        Style(_hintLine, 10, new Color(0.82f, 0.76f, 0.62f, 0.86f));
+        ui.AddChild(_hintLine);
+
         // 新手引导条：一行，压在提示线上方；对话打开时让位。
         // 两份底框：常态 / 被闸门拦下时闪的暖红（S4-02）。
         _tutStyleCold = new StyleBoxFlat
@@ -4322,10 +4407,10 @@ public partial class Main : Node2D
         Style(_hint, 11, new Color(0.80f, 0.75f, 0.62f, 0.88f));
         ui.AddChild(_hint);
 
-        // 三轴变化的那一条：HUD 那两行下面一点，字小一号，淡出后不占地方。
+        // 三轴变化的那一条：让到"目标 + 怎么去"两行下面，字小一号，淡出后不占地方。
         _trustToast = new Label
         {
-            Position = new Vector2(216, 60),
+            Position = new Vector2(216, 78),
             Size = new Vector2(ViewW - 228, 16),
             Visible = false,
         };

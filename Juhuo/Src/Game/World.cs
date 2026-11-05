@@ -299,6 +299,73 @@ public sealed class World
 
     public static int IndexOf(string hub) => Array.IndexOf(HubOrder, hub);
 
+    // ————————————————————————— 目标点（S4-03b）—————————————————————————
+
+    /// <summary>
+    /// 这一拍的目标点落在**当前空间**的哪一格；落不下就返回 null。
+    ///
+    /// 落不下有三种情况，都是正常的：
+    ///   · <c>hub:</c> 指的是别的空间（换空间要在 M 面板上走，不在地图上指）；
+    ///   · <c>point:</c> 那个点位不在这处（玩家走错空间了）；
+    ///   · <c>npc:</c> 那个人不在这处。
+    /// 返回 null 时 MapView 不画菱形，也不用箭头硬指——指一个不在场的东西只会更糊涂。
+    /// </summary>
+    /// <param name="objective">解析好的目标点。</param>
+    /// <returns>格子坐标；不在本空间或指不出来时为 null。</returns>
+    public Vector2? LocateObjective(Objective objective)
+    {
+        switch (objective.Kind)
+        {
+            case TargetKind.Exit:
+            {
+                var exit = SceneConfig.Of(Hub).Exit;
+                return exit.X < 0 || exit.Y < 0 ? null : exit;
+            }
+
+            case TargetKind.Point:
+                foreach (var p in Props)
+                    if (string.Equals(p.Point.Id, objective.Id, StringComparison.Ordinal))
+                        return p.Cell;
+                return null;
+
+            case TargetKind.Npc:
+            {
+                // 站着的人先按台词表认坐标（SceneConfig 只有 Kind，没有名字）
+                var talk = _talks.ByName(Hub, objective.Id);
+                if (talk is not null && (talk.X > 0 || talk.Y > 0))
+                    return new Vector2(talk.X, talk.Y);
+
+                // 巡逻的人会走，只能按名字找当前位置
+                foreach (var g in Guards)
+                    if (string.Equals(g.Name, objective.Id, StringComparison.Ordinal))
+                        return g.Cell;
+
+                return null;
+            }
+
+            default:
+                // Hub 目标要按 M 过去，或者干脆没有目标点：地图上不指。
+                return null;
+        }
+    }
+
+    /// <summary>点位 id 属于哪个空间；查不到返回 null。<c>--objective</c> 打括号里的地名用。</summary>
+    /// <param name="pointId">points.csv 的 id。</param>
+    /// <returns>hub id 或 null。</returns>
+    public string? HubOfPoint(string pointId)
+    {
+        foreach (var p in _table.All)
+            if (string.Equals(p.Id, pointId, StringComparison.Ordinal))
+                return p.Hub;
+
+        return null;
+    }
+
+    /// <summary>从当前空间去某处要几刻（travel.csv 说了算）；没路返回负数。</summary>
+    /// <param name="hub">目标 hub id。</param>
+    /// <returns>刻数或 <see cref="TravelBook.NoRoute"/>。</returns>
+    public int TravelCostTo(string hub) => _travel.Cost(Hub, hub);
+
     public void Load(string hub)
     {
         if (!HubTitles.ContainsKey(hub)) hub = "hub1";
