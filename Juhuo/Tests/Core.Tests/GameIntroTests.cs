@@ -87,14 +87,17 @@ public class GameIntroTests
     private static string Sig(Portrait p) =>
         string.Join("|", PortraitArt.Build(p).Select(x => $"{x.X},{x.Y},{x.W},{x.H},{x.Tone}"));
 
-    // ————————————————————————— 一、九行 —————————————————————————
+    // ————————————————————————— 一、开场若干行 —————————————————————————
 
     [Fact]
-    public void 开场九行_顺序连号_第七句是老仆带立绘()
+    public void 开场各行_顺序连号_老仆的那几句带立绘()
     {
         var table = Intro();
 
-        Assert.Equal(9, table.Count);
+        // 行数以表为准：P0 后来补了一句"三百三十万石"（主角动机），
+        // 写死 9 会让补文案变成改测试 —— 这正是内容迭代时最容易卡住的地方。
+        Assert.True(table.Count >= 9, $"开场至少九句，实际 {table.Count}");
+        Assert.True(table.Count <= 10, $"开场不超过十句，实际 {table.Count}");
 
         for (var i = 0; i < table.Count; i++)
             Assert.Equal(i + 1, table.All[i].Seq);
@@ -102,13 +105,15 @@ public class GameIntroTests
         Assert.True(table.All[0].IsNarration);
         Assert.False(table.All[0].HasPortrait);
 
-        Assert.Equal("老仆", table.All[6].Speaker);
-        Assert.Equal("老仆", table.All[6].Portrait);
-        Assert.False(table.All[6].IsNarration);
-        Assert.True(table.All[6].HasPortrait);
+        // 老仆那两句必须带立绘（位置随文案增删而变，按说话人找，不按序号找）
+        var oldServant = table.All.Where(l => l.Speaker == "老仆").ToList();
+        Assert.Equal(2, oldServant.Count);
+        Assert.All(oldServant, l => Assert.True(l.HasPortrait));
+        Assert.All(oldServant, l => Assert.Equal("老仆", l.Portrait));
+        Assert.All(oldServant, l => Assert.False(l.IsNarration));
 
-        // 前六句铺场景、第七八句老仆说话、第九句收尾——旁白七句、有人两句话。
-        Assert.Equal(7, table.All.Count(l => l.IsNarration));
+        // 旁白若干 + 老仆两句；两者相加必须等于总行数（别再有第三类没写 speaker 的行被漏掉）
+        Assert.Equal(table.Count - 2, table.All.Count(l => l.IsNarration));
         Assert.Equal(2, table.All.Count(l => !l.IsNarration));
     }
 
@@ -149,7 +154,7 @@ public class GameIntroTests
         for (var i = 0; i < flow.Count - 1; i++) Assert.True(flow.Advance());
 
         Assert.True(flow.IsLast);
-        Assert.Equal(9, flow.Ordinal);
+        Assert.Equal(flow.Count, flow.Ordinal);   // Ordinal 是 1 起的序号
 
         // 最后一行再按一次：这一段收场，进教程的那一步由 Main 接。
         Assert.False(flow.Advance());
@@ -189,14 +194,19 @@ public class GameIntroTests
     }
 
     [Fact]
-    public void 开场打印_九行格式对得上()
+    public void 开场打印_每行格式对得上()
     {
-        var lines = IntroReport.Lines(Intro()).ToList();
+        var table = Intro();
+        var lines = IntroReport.Lines(table).ToList();
 
-        Assert.Equal(9, lines.Count);
-        Assert.StartsWith("[开场] 1/9 旁白：夜。", lines[0]);
-        Assert.StartsWith("[开场] 7/9 老仆（立绘）：「少爷。」", lines[6]);
-        Assert.StartsWith("[开场] 9/9 旁白：后窗开着。", lines[8]);
+        Assert.Equal(table.Count, lines.Count);
+        Assert.StartsWith($"[开场] 1/{table.Count} 旁白：夜。", lines[0]);
+
+        // 老仆那一行：序号按数据算，文案与"（立绘）"标记要都在
+        var idx = table.All.ToList().FindIndex(l => l.Speaker == "老仆");
+        Assert.StartsWith($"[开场] {idx + 1}/{table.Count} 老仆（立绘）：「少爷。」", lines[idx]);
+
+        Assert.StartsWith($"[开场] {table.Count}/{table.Count} 旁白：后窗开着。", lines[^1]);
     }
 
     // ————————————————————————— 二、立绘的七层 —————————————————————————
