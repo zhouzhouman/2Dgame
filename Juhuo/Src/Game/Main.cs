@@ -68,6 +68,20 @@ public partial class Main : Node2D
     private float _ctrlHeld;
     private float _time;
 
+    // —— 教学闸门（S4-02）——
+    /// <summary>教学条的常态底框；按错时换成 <see cref="_tutStyleHot"/> 闪 0.3 秒。</summary>
+    private StyleBoxFlat? _tutStyleCold;
+    private StyleBoxFlat? _tutStyleHot;
+
+    /// <summary>闪到什么时候（<see cref="_time"/> 口径）；0 表示没在闪。</summary>
+    private float _tutFlashUntil;
+
+    /// <summary>Ctrl 上一帧按着没有：只在"刚按下"那一下问闸门，免得每帧刷提示。</summary>
+    private bool _ctrlWasDown;
+
+    /// <summary>这一下 Ctrl 被闸门拦了：不许高亮，也不许拿着它推"看"这一步。</summary>
+    private bool _lookBlocked;
+
     // —— 常驻目标 + 开局目标卡（S4-01c）——
     /// <summary>目标表（goals.csv）：起手 / 已转段 / 十二拍走完三句，加每拍自己的 goal。</summary>
     private GoalTable? _goals;
@@ -414,8 +428,10 @@ public partial class Main : Node2D
         // TryShowChoice 会一直让路，通关脚本就一拍都答不了（门禁当场红过一次）。
         // S4-01c 之后多一条：八步没走完不许出城，所以"会按出口的跑批"也得先把教学记完——
         // 否则 --chain 这种一进来就 OnExit 八次的自检会被出口自己挡住（七关串联当场红）。
+        // S4-02 之后 --exit 也算：它按的是真 E，闸门会把它拦在"这一步不是出门"上。
         if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun || _effectsRun
-            || _enfeoffRun || _args.Contains("--chain") || _args.Contains("--walk") || _args.Contains("--demo"))
+            || _enfeoffRun || _args.Contains("--chain") || _args.Contains("--walk") || _args.Contains("--demo")
+            || _args.Contains("--exit"))
             _tut.Finish();
 
         BuildUi();
@@ -895,6 +911,13 @@ public partial class Main : Node2D
             GD.Print($"[出口] 第二次 E：{from} → {_world.Hub}（{World.TitleOf(_world.Hub)}）");
         }
 
+        // 开发辅助：--gate 打印八步各自的"允许 / 拦下"矩阵，然后退出（S4-02）
+        if (OS.GetCmdlineUserArgs().Contains("--gate"))
+        {
+            foreach (var line in TutorialGate.Matrix()) GD.Print(line);
+            _quitAfterFrame = true;
+        }
+
         // 开发辅助：--beats 打印十二节拍这张表（当前进度、四态、当前那一拍），然后退出
         if (OS.GetCmdlineUserArgs().Contains("--beats"))
         {
@@ -1063,6 +1086,8 @@ public partial class Main : Node2D
 
         _time += (float)delta;
 
+        TickTutorialFlash();
+
         // 开场放着时只走时间（立绘脚下那条光要呼吸），不推引导、不提醒 Ctrl：
         // 玩家这会儿该看的是那九行字，不是"按住 Ctrl"。
         if (_introOpen) return;
@@ -1071,9 +1096,17 @@ public partial class Main : Node2D
         TickTutorial((float)delta);
         TickTrustToast();
 
-        // Ctrl 只按一下不算学会，按住半秒才推进
-        if (Input.IsKeyPressed(Key.Ctrl)) _ctrlHeld += (float)delta;
+        // Ctrl 只按一下不算学会，按住半秒才推进；而且这一步得先允许"看"（S4-02）。
+        // 只在"刚按下"那一下问闸门——每帧都问会把提示刷成一片。
+        var ctrlDown = Input.IsKeyPressed(Key.Ctrl);
+        if (ctrlDown && !_ctrlWasDown) _lookBlocked = !Gate(Act.Look);
+        if (!ctrlDown) _lookBlocked = false;
+        _ctrlWasDown = ctrlDown;
+
+        if (ctrlDown && !_lookBlocked) _ctrlHeld += (float)delta;
         else _ctrlHeld = 0f;
+
+        if (_view is not null) _view.LookAllowed = !_lookBlocked;
 
         TickNudge((float)delta);
     }
@@ -1247,6 +1280,16 @@ public partial class Main : Node2D
         // 卡在的时候推，玩家会看见教学条从"1/8"直接跳成"2/8"，还以为自己漏了一课。
         if (_tut.Done || _goalCard.Visible) return;
 
+        // 先看这一步在这个空间里做不做得到：hub1 没有 NPC，第七步在那儿永远做不成。
+        // 做不到就**跳过去**——强制教学的第一条是"不许把人卡住"，不是"逼他完成"。
+        if (TutorialGate.Impossible(TutStage(), _world.Props.Count > 0,
+                _world.TalksHere().Any(), SceneConfig.Of(_world.Hub).Exit.X > 0))
+        {
+            GD.Print($"[引导·跳] {_tut.Current}（{TutorialGate.Key(TutStage())}）：这一处没有这一步要的东西");
+            AdvanceTutorial();
+            return;
+        }
+
         switch (_tut.Current)
         {
             case Onboarding.Stage.Move when (_world.Player.Cell - _spawnCell).Length() > 0.9f:
@@ -1274,11 +1317,6 @@ public partial class Main : Node2D
                 AdvanceTutorial();
                 break;
 
-            case Onboarding.Stage.Talk when !_world.TalksHere().Any():
-                // 这一关没人说话（小院就是），别让玩家等一个永远不会来的提示
-                AdvanceTutorial();
-                break;
-
             case Onboarding.Stage.Talk when _world.Talked.Count > 0:
                 AdvanceTutorial();
                 break;
@@ -1289,10 +1327,76 @@ public partial class Main : Node2D
         }
     }
 
+    // ————————————————————————— 教学闸门（S4-02） —————————————————————————
+
+    /// <summary>八步的教学阶段（Application 那套），与 <c>Onboarding.Stage</c> 同序。</summary>
+    private TutorialStage TutStage() =>
+        (TutorialStage)Math.Clamp((int)_tut.Current, 0, (int)TutorialStage.Done);
+
     /// <summary>
-    /// 35 秒还没翻过东西，就轻轻提醒一次 Ctrl。
+    /// 问一句闸门：放行返回 true；被拦下时把提示写出来、教学条闪一下，返回 false。
+    /// 调用方拿到 false 就**什么都别做**——位置、刻、已搜、面板开关一个都不许动。
+    /// </summary>
+    private bool Gate(Act act)
+    {
+        var hint = TutorialGate.Block(TutStage(), act);
+        if (hint is null) return true;
+
+        Deny(act, hint);
+        return false;
+    }
+
+    /// <summary>被拦下的统一动作：提示三秒 + 教学条闪一下 + 留一行日志。</summary>
+    private void Deny(Act act, string hint)
+    {
+        SetHint(hint, 3f);
+        FlashTutorial();
+        GD.Print($"[引导·拦] {_tut.Current}（{TutorialGate.Key(TutStage())}）不许 {act}：{hint}");
+    }
+
+    /// <summary>
+    /// 教学条闪一下：底框换成暖红 0.3 秒。
+    /// 玩家按了没反应，必须有个"我看见了，但这一步不行"的回音，否则他会以为键坏了。
+    /// </summary>
+    private void FlashTutorial()
+    {
+        if (_tutPanel is null) return;
+
+        _tutFlashUntil = _time + 0.3f;
+
+        if (_tutStyleHot is not null) _tutPanel.AddThemeStyleboxOverride("panel", _tutStyleHot);
+        _tutText.AddThemeColorOverride("font_color", new Color(1.00f, 0.66f, 0.48f, 1.00f));
+        _tutKey.AddThemeColorOverride("font_color", new Color(1.00f, 0.78f, 0.46f, 1.00f));
+
+        // 面板（地图 / 囊 / 三轴）压在上面时教学条本来是让位的：
+        // 那几层的账由面板自己写一句，这里只在没被压住的时候把它亮出来。
+        var covered = _mapOpen || _bagOpen || _trustOpen || _box.Visible || _helpOpen
+                      || _shopOpen || _transitionOpen || _introOpen || _goalCard.Visible;
+
+        if (!covered) _tutPanel.Visible = true;
+    }
+
+    /// <summary>闪完了换回常态配色。每帧查一次，到点就收。</summary>
+    private void TickTutorialFlash()
+    {
+        if (_tutFlashUntil <= 0f || _time < _tutFlashUntil) return;
+
+        _tutFlashUntil = 0f;
+
+        if (_tutPanel is not null && _tutStyleCold is not null)
+            _tutPanel.AddThemeStyleboxOverride("panel", _tutStyleCold);
+
+        _tutText?.AddThemeColorOverride("font_color", new Color(0.86f, 0.82f, 0.72f, 0.94f));
+        _tutKey?.AddThemeColorOverride("font_color", new Color(0.94f, 0.74f, 0.42f, 0.96f));
+    }
+
+
+    /// <summary>
+    /// 35 秒还没翻过东西，就轻轻提醒一次"这一步该做什么"。
     /// 只提醒一次、只在本处提醒——提示说两遍就变成唠叨。
-    /// 这一句从教学表里取：同一条指令在屏幕上写两种说法，玩家会以为是两件事。
+    ///
+    /// 提示的话从闸门那张表里取，不写死"按住 Ctrl"（S4-02）：
+    /// 这一步要是根本不许看，提醒他按 Ctrl 等于教他一个不会响的键。
     /// </summary>
     private void TickNudge(float dt)
     {
@@ -1304,7 +1408,8 @@ public partial class Main : Node2D
 
         _ctrlNudged = true;
 
-        if (_tut.Script?.Get(Onboarding.KeyLook) is { } look) SetHint(look.Text, 5f);
+        var hint = TutorialGate.Hint(TutStage());
+        if (hint.Length > 0) SetHint(hint, 5f);
     }
 
     /// <summary>
@@ -1433,6 +1538,15 @@ public partial class Main : Node2D
             _view.Exited += OnExit;
             _view.Searched += OnSearched;
             _view.InteractFallback = TrySearchBeatFallback;
+
+            // 教学闸门（S4-02）：E 这一下先问"这一步让不让翻 / 说 / 出门"。
+            // 拦下时不动作，只把提示给玩家；提示与闪动都在 Deny 里统一做。
+            _view.Gate = act =>
+            {
+                var hint = TutorialGate.Block(TutStage(), act);
+                if (hint is not null) Deny(act, hint);
+                return hint;
+            };
         }
         else
         {
@@ -1470,7 +1584,9 @@ public partial class Main : Node2D
 
             if (!_tut.Done)
             {
-                SetHint(MapText.FinishLessonFirst, 3f);
+                // 这一刻该做什么，由闸门那张表说话（第八步就是"走到黄框边按 E 出城"）。
+                var hint = TutorialGate.Block(TutStage(), Act.Exit) ?? MapText.FinishLessonFirst;
+                Deny(Act.Exit, hint);
                 GD.Print("[引导] 不让他出城：这一课还没上完");
                 return;
             }
@@ -1538,7 +1654,13 @@ public partial class Main : Node2D
     private string IdleHint()
     {
         var searched = _world.Props.Count(p => _world.IsSearched(p.Point.Id));
-        return $"WASD 走动　·　E 搜查　·　按住 Ctrl 看全部　·　本处已搜 {searched}/{_world.Props.Count}";
+
+        // 这一步按了不响的键，就不许再写在底下（S4-02）：
+        // "按住 Ctrl 看全部"挂在屏幕上、按下去却什么都不亮，玩家只会以为键坏了。
+        var search = TutorialGate.Block(TutStage(), Act.Search) is null ? "　·　E 搜查" : "";
+        var look = TutorialGate.Block(TutStage(), Act.Look) is null ? "　·　按住 Ctrl 看全部" : "";
+
+        return $"WASD 走动{search}{look}　·　本处已搜 {searched}/{_world.Props.Count}";
     }
 
     private void ShowText(string head, string body)
@@ -1718,6 +1840,9 @@ public partial class Main : Node2D
 
         if (_box.Visible || _helpOpen || _choiceOpen || _trustOpen || _mapOpen) return;
 
+        // 开囊要过闸（S4-02）；关囊在上面早早就 return 了，永远放行。
+        if (!Gate(Act.Bag)) return;
+
         OpenBag(showing: false, npc: "");
     }
 
@@ -1827,6 +1952,7 @@ public partial class Main : Node2D
     private void DropSelected()
     {
         if (_bagPanel is null || _bagShowing) return;
+        if (!BagEditAllowed()) return;
 
         var item = _bagPanel.SelectedItem;
         if (item is null || !_bagPanel.Drop()) return;
@@ -1836,10 +1962,28 @@ public partial class Main : Node2D
         UpdateChrome();
     }
 
+    /// <summary>
+    /// 囊里改东西（丢 / 用）之前先问一句：教学没走完只让看，不让改（S4-02）。
+    /// 被拦时提示写进囊底那一行——囊开着的时候屏幕底下那条提示是让了位的，
+    /// 写在它上面玩家一个字都看不见。
+    /// </summary>
+    private bool BagEditAllowed()
+    {
+        var hint = TutorialGate.BlockBagEdit(TutStage());
+        if (hint is null) return true;
+
+        _bagFoot.Text = hint;
+        SetHint(hint, 3f);
+        FlashTutorial();
+        GD.Print($"[引导·拦] 囊里不许改：{hint}");
+        return false;
+    }
+
     /// <summary>给他看：三种反应分开，落旗标由 World 转给 FlagStore。</summary>
     private void ConfirmShow()
     {
         if (_bagPanel is null || _world is null) return;
+        if (!BagEditAllowed()) return;
 
         var item = _bagPanel.SelectedItem;
         if (item is null) return;
@@ -1986,6 +2130,9 @@ public partial class Main : Node2D
         }
 
         if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen || _mapOpen) return;
+
+        // 开三轴要过闸（S4-02）；关在上面那段早 return，永远放行。
+        if (!Gate(Act.Trust)) return;
 
         OpenTrust();
     }
@@ -2355,6 +2502,10 @@ public partial class Main : Node2D
         if (_box.Visible || _helpOpen || _choiceOpen || _bagOpen || _trustOpen
             || _shopOpen || _transitionOpen || _introOpen) return;
 
+        // 关面板永远放行（上面那条 return 之前），开面板才问闸门——
+        // 拦"关"会让玩家以为界面卡死。
+        if (!Gate(Act.Map)) return;
+
         OpenMap();
     }
 
@@ -2434,11 +2585,12 @@ public partial class Main : Node2D
 
         // 教学没走完，地图可以看、可以选，但走不了：这是玩家要的"强制"。
         // 面板不关，把原因写在面板里——他抬头就能读完这一步该做什么。
-        if (!_tut.CanLeaveCity)
+        if (TutorialGate.BlockMapTravel(TutStage()) is { } byLesson)
         {
-            _mapScreen.Refuse(MapText.FinishLessonFirst);
+            _mapScreen.Refuse(byLesson);
             PaintMap();
-            GD.Print("[图] 不让他出城：这一课还没上完");
+            SetHint(byLesson, 3f);
+            GD.Print($"[图] 不让他出城：这一课还没上完（{byLesson}）");
             return;
         }
 
@@ -4119,18 +4271,28 @@ public partial class Main : Node2D
         Style(_goalLine, 12, new Color(0.96f, 0.86f, 0.60f, 0.97f));
         ui.AddChild(_goalLine);
 
-        // 新手引导条：一行，压在提示线上方；对话打开时让位
+        // 新手引导条：一行，压在提示线上方；对话打开时让位。
+        // 两份底框：常态 / 被闸门拦下时闪的暖红（S4-02）。
+        _tutStyleCold = new StyleBoxFlat
+        {
+            BgColor = new Color(0.055f, 0.060f, 0.058f, 0.86f),
+            BorderColor = new Color(0.72f, 0.34f, 0.22f, 0.85f),
+            BorderWidthLeft = 2,
+        };
+
+        _tutStyleHot = new StyleBoxFlat
+        {
+            BgColor = new Color(0.170f, 0.070f, 0.050f, 0.92f),
+            BorderColor = new Color(0.98f, 0.62f, 0.36f, 1.00f),
+            BorderWidthLeft = 3,
+        };
+
         _tutPanel = new Panel
         {
             Position = new Vector2(18, ViewH - 74),
             Size = new Vector2(ViewW - 36, 30),
         };
-        _tutPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
-        {
-            BgColor = new Color(0.055f, 0.060f, 0.058f, 0.86f),
-            BorderColor = new Color(0.72f, 0.34f, 0.22f, 0.85f),
-            BorderWidthLeft = 2,
-        });
+        _tutPanel.AddThemeStyleboxOverride("panel", _tutStyleCold);
         ui.AddChild(_tutPanel);
 
         _tutKey = new Label

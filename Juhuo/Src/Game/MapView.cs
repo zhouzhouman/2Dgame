@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Juhuo.Application;
 using Juhuo.Art;
 
 namespace Juhuo;
@@ -33,6 +34,15 @@ public partial class MapView : Node2D
 
     /// <summary>UI 挡在前面（对话框 / 操作说明）时，不许走动。</summary>
     public bool UiBlocking { get; set; }
+
+    /// <summary>
+    /// 教学闸门（S4-02）：这一下 E 要做的事，这一步允不允许。
+    /// 返回 null 放行；返回一句提示就是拦下——调用方那边已经把提示亮出来了，这里只需别动手。
+    /// </summary>
+    public Func<Act, string?>? Gate { get; set; }
+
+    /// <summary>这一步允不允许按住 Ctrl 看全部。被闸门拦下时高亮也别亮。</summary>
+    public bool LookAllowed { get; set; } = true;
 
     /// <summary>当前伸手够得着的东西，给 HUD 拼提示用。</summary>
     public Interactable? Near => _near;
@@ -100,7 +110,7 @@ public partial class MapView : Node2D
         if (UiBlocking || _boxOpen)
         {
             _world.Player.Moving = false;
-            _highlight = ForceHighlight || Input.IsKeyPressed(Key.Ctrl);
+            _highlight = ForceHighlight || (LookAllowed && Input.IsKeyPressed(Key.Ctrl));
             return;
         }
 
@@ -122,7 +132,7 @@ public partial class MapView : Node2D
         else
             _world.Player.Moving = false;
 
-        _highlight = ForceHighlight || Input.IsKeyPressed(Key.Ctrl);
+        _highlight = ForceHighlight || (LookAllowed && Input.IsKeyPressed(Key.Ctrl));
     }
 
     /// <summary>
@@ -193,6 +203,14 @@ public partial class MapView : Node2D
 
         // 面板（操作说明 / 选项）压在上面时，E 归面板管，别顺手把身边的东西也翻了。
         if (UiBlocking) return;
+
+        // 教学闸门（S4-02）：先问这一下 E 要做的事（出门 / 说话 / 翻东西）这一步让不让。
+        // 顺序必须和"按 E 到底会发生什么"一致，否则拦下来的理由会文不对题。
+        var act = AtExit() ? Act.Exit
+            : _world.NearestSpeaker() is not null ? Act.Talk
+            : Act.Search;
+
+        if (Gate?.Invoke(act) is not null) return;
 
         // 用实时判定，不读 _atExit 缓存：缓存是给底部提示用的，
         // 而且它只在 _Process 里更新，测试钩子调进来时会是一帧前的旧值。
