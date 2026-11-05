@@ -69,6 +69,12 @@ public static class MapText
     /// <summary>站在这一格还想去同一格。</summary>
     public const string AlreadyHere = "你已经在这儿了。";
 
+    /// <summary>
+    /// 教学还没走完就想去别处（S4-01c）。出口与地图问的是同一句话——
+    /// 玩家从哪条路走都得先上完这一课。
+    /// </summary>
+    public const string FinishLessonFirst = "先把这一课学完，再出城。";
+
     /// <summary>顶上那一行：<c>第 3 天　余刻 5/8</c>。</summary>
     /// <param name="day">第几天。</param>
     /// <param name="keLeft">还剩几刻。</param>

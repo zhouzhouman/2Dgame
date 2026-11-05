@@ -53,7 +53,12 @@ public partial class Main : Node2D
     private FontFile? _font;
 
     // —— 新手引导 ——
-    private readonly Onboarding _tut = new();
+    /// <summary>
+    /// 八步教学（S4-01c）。教学表在 <c>_Ready</c> 里读，读到之前先是一台"不教"的空机器
+    /// ——<c>LoadProgress</c> 会在表读进来之前就 Reset / Finish 它。
+    /// </summary>
+    private Onboarding _tut = new();
+
     private Progress _progress = new();
     private Panel _tutPanel = default!;
     private Label _tutKey = default!;
@@ -61,6 +66,19 @@ public partial class Main : Node2D
     private Vector2 _spawnCell;
     private float _ctrlHeld;
     private float _time;
+
+    // —— 常驻目标 + 开局目标卡（S4-01c）——
+    /// <summary>目标表（goals.csv）：起手 / 已转段 / 十二拍走完三句，加每拍自己的 goal。</summary>
+    private GoalTable? _goals;
+
+    /// <summary>顶部那一行"目标　活过今夜"。与天数/刻分开一行，字号略大一点。</summary>
+    private Label _goalLine = default!;
+
+    /// <summary>开局那张卡的状态机：2.5 秒 / 任意键自己走，不挡键。</summary>
+    private readonly GoalCard _goalCard = new();
+    private Panel _goalCardPanel = default!;
+    private Label _goalCardHead = default!;
+    private Label _goalCardBody = default!;
 
     // —— 操作说明 ——
     private Panel _help = default!;
@@ -375,6 +393,11 @@ public partial class Main : Node2D
             return;
         }
 
+        // 教学表要在 LoadProgress 之前读：进度那一步会 Reset / Finish 这台步骤机
+        // （"看过一次就不再挡人"这条规矩），表还没读进来就分不清八步是哪八步。
+        // 读不进来只打一句警告、这一局不教——别让一张表把整局挡住（与 intro.csv 同一口径）。
+        _tut = new Onboarding(TryLoadTutorialScript());
+
         LoadProgress();
 
         // 跑批不学走路：脚本自己会走位。教程没标完成的话，
@@ -434,6 +457,9 @@ public partial class Main : Node2D
 
             // 十二节拍：表是数据，状态机是 Core，接法是本票（S1-06c）。
             _beatTable = BeatTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/beats.csv"));
+
+            // 目标表（S4-01c）：HUD 那一行与开局卡都读这一份，代码里不留第二份中文。
+            _goals = GoalTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/goals.csv"));
 
             // 双信任轴：两张表都是数据，加多少、开不开门在 Core，接线与显示是本票（S1-01c）
             _trustTable = TrustTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/trust.csv"));
@@ -549,7 +575,7 @@ public partial class Main : Node2D
             GD.Print($"[举火] {_table.All.Count} 件可搜查物、{_talks.All.Count} 位可对话 NPC，当前 {_world.Hub}（{World.TitleOf(_world.Hub)}）有 {_world.Props.Count} 个");
 
             if (!_tut.Done)
-                GD.Print($"[引导] 共 {_tutLineCount} 步，当前「{_tut.Line.Key}」");
+                GD.Print($"[引导] 共 {_tut.Total} 步，当前「{_tut.Bar} {_tut.Step?.Title}」");
         }
         catch (Exception e)
         {
@@ -568,14 +594,14 @@ public partial class Main : Node2D
             if (!a.StartsWith("--tutstep=", StringComparison.Ordinal)) continue;
             if (!int.TryParse(a[10..], out var step)) continue;
 
-            _tut.Reach((Onboarding.Stage)Math.Clamp(step, 0, 5));
+            _tut.Reach((Onboarding.Stage)Math.Clamp(step, 0, (int)Onboarding.Stage.Done));
             PaintTutorial();
         }
 
         if (OS.GetCmdlineUserArgs().Contains("--help"))
             ToggleHelp();
 
-        // 开发辅助：--tutrun 把五步一次走完，验证引导真的推得动、进度真的落盘
+        // 开发辅助：--tutrun 把八步一次走完，验证引导真的推得动、进度真的落盘
         if (OS.GetCmdlineUserArgs().Contains("--tutrun") && _world is not null)
             RunTutorialOnce();
 
@@ -883,6 +909,22 @@ public partial class Main : Node2D
 
         // 开发辅助：--shotbag / --shottrust 开面板截一张就退，和 --shot 同一条截图路径。
         // 先把手上的选项收起来，免得截到两层面板叠在一起。
+        var shotWanted = args.Contains("--shotbag") || args.Contains("--shottut")
+                         || args.Contains("--shotmap") || args.Contains("--shot")
+                         || args.Contains("--shotshop") || args.Contains("--shottrust");
+
+        // 截图截的是**游戏本身**；开场那九行另有 --shotintro。新档（--newgame）一进来就开场，
+        // 不收掉的话 --newgame --shotmap 截到的是九行字压在地图上面。
+        if (shotWanted && _introOpen) FinishIntro(skipped: true);
+
+        // 面板类截图（--shotmap 等）不许目标卡压在上面；--shottut 要看的正是底下那条教学。
+        // 只有什么都不带的 --shot 留着卡——那是它唯一能截到卡的时候。
+        if (shotWanted && !args.Contains("--shot") && _goalCard.Visible)
+        {
+            _goalCard.Dismiss();
+            HideGoalCard();
+        }
+
         if (args.Contains("--shotbag"))
         {
             CloseChoice(restoreTutorial: false);
@@ -937,6 +979,13 @@ public partial class Main : Node2D
             StartIntro(at);
             _ = CaptureAndQuitAsync();
         }
+        else if (args.Contains("--shottut"))
+        {
+            // 只为截图（S4-01c）：留下一帧"玩家刚学会走路之前"的样子——
+            // 顶部那行目标、底下那条 1/8 的教学，两张东西互不压着。
+            // 开场与目标卡在上面那段公共逻辑里已经收掉了。
+            _ = CaptureAndQuitAsync();
+        }
         else if (args.Contains("--shot"))
         {
             _ = CaptureAndQuitAsync();
@@ -965,6 +1014,7 @@ public partial class Main : Node2D
         // 玩家这会儿该看的是那九行字，不是"按住 Ctrl"。
         if (_introOpen) return;
 
+        TickGoalCard((float)delta);
         TickTutorial((float)delta);
         TickTrustToast();
 
@@ -1006,6 +1056,14 @@ public partial class Main : Node2D
         {
             HandleIntroKey(k.Keycode);
             return;
+        }
+
+        // 开局那张目标卡：任意键收起来，但**这个键照常往下走**——
+        // 按 W 就是走一步，按 M 就是开地图。它是提示，不是"按 Enter 继续"的门。
+        if (_goalCard.Visible)
+        {
+            _goalCard.Dismiss();
+            HideGoalCard();
         }
 
         // 转段四页压在一切之上：四页之内 Esc 也不退（这是不可逆的十分钟）。
@@ -1122,15 +1180,19 @@ public partial class Main : Node2D
 
     // ————————————————————————— 新手引导 —————————————————————————
 
-    private const int _tutLineCount = 5;
-
     /// <summary>
     /// 按玩家实际做过的事推进，不用"点下一步"。
     /// 每一步的条件都能在 World / MapView 里查到，不额外记状态。
+    ///
+    /// 八步（S4-01c）：走 → 看 → 翻 → 图 → 囊 → 三轴 → 说 → 出门。
+    /// 中间三步是**面板类**：按 M / I / Tab 把面板打开，这一步就算做到——
+    /// 玩家本来就是想看它，不该再要求他按第二下。
     /// </summary>
     private void TickTutorial(float dt)
     {
-        if (_tut.Done) return;
+        // 教完了、或者开局那张目标卡还挂在正中间：都不推。
+        // 卡在的时候推，玩家会看见教学条从"1/8"直接跳成"2/8"，还以为自己漏了一课。
+        if (_tut.Done || _goalCard.Visible) return;
 
         switch (_tut.Current)
         {
@@ -1143,6 +1205,19 @@ public partial class Main : Node2D
                 break;
 
             case Onboarding.Stage.Search when _world.Searched.Count > 0:
+                AdvanceTutorial();
+                break;
+
+            // 面板三步：打开就算做到。面板关上的时候 PaintTutorial 才把下一条亮出来。
+            case Onboarding.Stage.Map when _mapOpen:
+                AdvanceTutorial();
+                break;
+
+            case Onboarding.Stage.Bag when _bagOpen:
+                AdvanceTutorial();
+                break;
+
+            case Onboarding.Stage.Trust when _trustOpen:
                 AdvanceTutorial();
                 break;
 
@@ -1164,6 +1239,7 @@ public partial class Main : Node2D
     /// <summary>
     /// 35 秒还没翻过东西，就轻轻提醒一次 Ctrl。
     /// 只提醒一次、只在本处提醒——提示说两遍就变成唠叨。
+    /// 这一句从教学表里取：同一条指令在屏幕上写两种说法，玩家会以为是两件事。
     /// </summary>
     private void TickNudge(float dt)
     {
@@ -1174,7 +1250,8 @@ public partial class Main : Node2D
         if (_idleHere < 35f) return;
 
         _ctrlNudged = true;
-        SetHint("按住 Ctrl　·　这一处能碰的东西会一起亮起来", 5f);
+
+        if (_tut.Script?.Get(Onboarding.KeyLook) is { } look) SetHint(look.Text, 5f);
     }
 
     /// <summary>
@@ -1203,6 +1280,26 @@ public partial class Main : Node2D
                     }
                     break;
 
+                // 面板三步：走真路径（开、推一步、关）。绕过去直接用 Advance 就测不出
+                // "面板按住打开状态能不能被识别成做到了"。
+                case Onboarding.Stage.Map:
+                    OpenMap();
+                    TickTutorial(0f);
+                    CloseMap();
+                    break;
+
+                case Onboarding.Stage.Bag:
+                    OpenBag(showing: false, npc: "");
+                    TickTutorial(0f);
+                    CloseBag(restoreBox: false);
+                    break;
+
+                case Onboarding.Stage.Trust:
+                    OpenTrust();
+                    TickTutorial(0f);
+                    CloseTrust();
+                    break;
+
                 case Onboarding.Stage.Talk:
                     var t = _world.TalksHere().FirstOrDefault();
                     if (t is not null)
@@ -1226,10 +1323,7 @@ public partial class Main : Node2D
 
     private void AdvanceTutorial()
     {
-        var next = _tut.Current + 1;
-        _tut.Reach((Onboarding.Stage)next);
-
-        if (_tut.Done)
+        if (_tut.Advance())
         {
             _tutPanel.Visible = false;
             _progress.TutorialDone = true;
@@ -1247,8 +1341,15 @@ public partial class Main : Node2D
 
     private void PaintTutorial()
     {
+        if (_tutPanel is null) return;
+
         var (key, text) = _tut.Line;
-        _tutPanel.Visible = !_tut.Done && !_introOpen && !_box.Visible && !_helpOpen && !_mapOpen;
+
+        // 目标卡、开场、对话框、说明、地图、囊、三轴、柜台、转段——任何一层在上面都让位。
+        _tutPanel.Visible = !_tut.Done && !_goalCard.Visible && !_introOpen && !_box.Visible
+                            && !_helpOpen && !_mapOpen && !_bagOpen && !_trustOpen
+                            && !_shopOpen && !_transitionOpen;
+
         _tutKey.Text = key;
         _tutText.Text = text;
     }
@@ -1308,6 +1409,20 @@ public partial class Main : Node2D
 
     private void OnExit()
     {
+        // 八步没走完不出城（S4-01c）。站在出口、而且正停在"出门"这一步：这一下本来就是
+        // 教程要求的动作，先把最后一步记上再放他走——不是给他开后门。
+        if (!_tut.Done)
+        {
+            if (_tut.Current == Onboarding.Stage.Leave && AtExitHere()) AdvanceTutorial();
+
+            if (!_tut.Done)
+            {
+                SetHint(MapText.FinishLessonFirst, 3f);
+                GD.Print("[引导] 不让他出城：这一课还没上完");
+                return;
+            }
+        }
+
         if (_world.TryExit())
         {
             Mount();
@@ -1504,6 +1619,31 @@ public partial class Main : Node2D
             _beatLine.AddThemeColorOverride("font_color",
                 BagHud.Warn(_world.Bag) ? BagInk : BeatInk);
         }
+
+        UpdateGoalLine();
+    }
+
+    /// <summary>
+    /// 顶上那一行常驻目标（S4-01c）：<c>目标　活过今夜</c>。
+    ///
+    /// 每拍完成（<see cref="AfterBeat"/>）、转段收尾、换空间与读档（都走 <see cref="Mount"/>）
+    /// 都会到这里来一次——所以目标不会停在上一拍那句上。
+    /// 只在字真的变了的时候打一行日志：跑批与自检靠它认"目标确实跟着剧情走"。
+    /// </summary>
+    private void UpdateGoalLine()
+    {
+        if (_goalLine is null || _goals is null) return;
+
+        var line = GoalHud.Line(
+            _goals,
+            _beats?.Current,
+            _beats?.AllDone ?? false,
+            _transitionBook?.IsDone ?? false);
+
+        if (string.Equals(_goalLine.Text, line, StringComparison.Ordinal)) return;
+
+        _goalLine.Text = line;
+        GD.Print($"[目标] {line}");
     }
 
     // ————————————————————————— 囊 —————————————————————————
@@ -2237,6 +2377,16 @@ public partial class Main : Node2D
     private void ConfirmMapTravel()
     {
         if (_mapScreen is null || _world is null) return;
+
+        // 教学没走完，地图可以看、可以选，但走不了：这是玩家要的"强制"。
+        // 面板不关，把原因写在面板里——他抬头就能读完这一步该做什么。
+        if (!_tut.CanLeaveCity)
+        {
+            _mapScreen.Refuse(MapText.FinishLessonFirst);
+            PaintMap();
+            GD.Print("[图] 不让他出城：这一课还没上完");
+            return;
+        }
 
         var row = _mapScreen.Current;
 
@@ -3468,9 +3618,52 @@ public partial class Main : Node2D
         PaintTutorial();
         RefreshHint();
 
+        // 九句话说完，先告诉他"你要做的"这四个字后面跟着什么，再开始教走路。
+        ShowGoalCard();
+
         GD.Print(skipped
             ? $"[开场] 跳过（{_intro.Count} 行都记作看过），进教程"
             : $"[开场] 九行放完，进教程");
+    }
+
+    // ————————————————————————— 开局目标卡（S4-01c）—————————————————————————
+
+    /// <summary>
+    /// 把卡摆出来：正文取 goals.csv 的 <c>start</c> 那一句（"活过今夜"）。
+    /// 只在还没教完的时候摆——教完的玩家早就知道要干什么了。
+    /// </summary>
+    private void ShowGoalCard()
+    {
+        if (_goals is null || _tut.Done || _goalCardPanel is null) return;
+
+        _goalCard.Show(_goals.Start);
+        _goalCardHead.Text = GoalCard.Head;
+        _goalCardBody.Text = _goalCard.Body;
+        _goalCardPanel.Modulate = new Color(1f, 1f, 1f, 0f);
+        _goalCardPanel.Visible = true;
+
+        // 卡在上面时教学条让开：两张东西一起说"你要做什么"会互相抢。
+        if (_tutPanel is not null) _tutPanel.Visible = false;
+
+        GD.Print($"[目标] 开局卡：{GoalCard.Head} / {_goalCard.Body}");
+    }
+
+    /// <summary>淡入 + 到点自己收。不吃键——它只是提示。</summary>
+    private void TickGoalCard(float dt)
+    {
+        if (!_goalCard.Visible) return;
+
+        var still = _goalCard.Tick(dt);
+        _goalCardPanel.Modulate = new Color(1f, 1f, 1f, _goalCard.Alpha);
+
+        if (!still) HideGoalCard();
+    }
+
+    private void HideGoalCard()
+    {
+        _goalCardPanel.Visible = false;
+        _goalCardPanel.Modulate = new Color(1f, 1f, 1f, 0f);
+        PaintTutorial();
     }
 
     /// <summary>表里的立绘名 → 这个人的脸。没有这张表 / 没这个人，都返回 null。</summary>
@@ -3490,6 +3683,7 @@ public partial class Main : Node2D
         if (_title is not null) _title.Visible = on;
         if (_subtitle is not null) _subtitle.Visible = on;
         if (_beatLine is not null) _beatLine.Visible = on;
+        if (_goalLine is not null) _goalLine.Visible = on;
     }
 
     /// <summary>读 intro.csv。读不进来只是不放开场，打一句警告就走。</summary>
@@ -3502,6 +3696,23 @@ public partial class Main : Node2D
         catch (Exception e)
         {
             GD.PushWarning($"[开场] intro.csv 读不进来：{e.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 读 tutorial.csv（S4-01c）。读不进来只是这一局不教，打一句警告就走——
+    /// 一张表坏掉不该把整局挡在白屏上；但警告要能一眼认出来是表的问题。
+    /// </summary>
+    private static TutorialScript? TryLoadTutorialScript()
+    {
+        try
+        {
+            return TutorialScript.FromCsv(FileAccess.GetFileAsString("res://Content/data/tutorial.csv"));
+        }
+        catch (Exception e)
+        {
+            GD.PushWarning($"[引导] tutorial.csv 读不进来，这一局不教：{e.Message}");
             return null;
         }
     }
@@ -3785,12 +3996,23 @@ public partial class Main : Node2D
         // 节拍那一行：画面上沿，铭牌右边。玩家抬头就知道"现在该做什么"。
         _beatLine = new Label
         {
-            Position = new Vector2(216, 20),
+            Position = new Vector2(216, 18),
             Size = new Vector2(ViewW - 228, 20),
             VerticalAlignment = VerticalAlignment.Center,
         };
         Style(_beatLine, 11, new Color(0.93f, 0.72f, 0.44f, 0.94f));
         ui.AddChild(_beatLine);
+
+        // 目标那一行（S4-01c）：单独一行、字号比天数那行大半号，前缀"目标　"。
+        // 天数说"现在第几天"，目标说"你到底要干什么"——后者才是玩家嘴里"目的明确一点"。
+        _goalLine = new Label
+        {
+            Position = new Vector2(216, 38),
+            Size = new Vector2(ViewW - 228, 20),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_goalLine, 12, new Color(0.96f, 0.86f, 0.60f, 0.97f));
+        ui.AddChild(_goalLine);
 
         // 新手引导条：一行，压在提示线上方；对话打开时让位
         _tutPanel = new Panel
@@ -3833,10 +4055,10 @@ public partial class Main : Node2D
         Style(_hint, 11, new Color(0.80f, 0.75f, 0.62f, 0.88f));
         ui.AddChild(_hint);
 
-        // 三轴变化的那一条：HUD 那行下面一点，字小一号，淡出后不占地方。
+        // 三轴变化的那一条：HUD 那两行下面一点，字小一号，淡出后不占地方。
         _trustToast = new Label
         {
-            Position = new Vector2(216, 40),
+            Position = new Vector2(216, 60),
             Size = new Vector2(ViewW - 228, 16),
             Visible = false,
         };
@@ -3852,9 +4074,58 @@ public partial class Main : Node2D
         BuildTransition(ui);
         BuildMap(ui);
         BuildIntro();
+        BuildGoalCard(ui);
 
         PaintTutorial();
         _help.Visible = false;
+    }
+
+    /// <summary>
+    /// 开局那张目标卡（S4-01c）：屏幕正中、深底一条横线，抬头看见"你要做的 / 活过今夜"。
+    /// 它不接键盘、不挡键——收它靠 <see cref="GoalCard"/> 的计时或任意键（那个键照常生效）。
+    /// </summary>
+    private void BuildGoalCard(CanvasLayer ui)
+    {
+        const int w = 348;
+        const int h = 108;
+
+        _goalCardPanel = new Panel
+        {
+            Position = new Vector2((ViewW - w) / 2f, (ViewH - h) / 2f),
+            Size = new Vector2(w, h),
+            Visible = false,
+            Modulate = new Color(1f, 1f, 1f, 0f),
+        };
+        _goalCardPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.050f, 0.048f, 0.042f, 0.94f),
+            BorderColor = new Color(0.72f, 0.34f, 0.22f, 0.90f),
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            BorderWidthLeft = 3,
+            BorderWidthRight = 1,
+        });
+        ui.AddChild(_goalCardPanel);
+
+        _goalCardHead = new Label
+        {
+            Position = new Vector2(20, 14),
+            Size = new Vector2(w - 40, 18),
+            Text = GoalCard.Head,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_goalCardHead, 11, new Color(0.70f, 0.64f, 0.50f, 0.95f));
+        _goalCardPanel.AddChild(_goalCardHead);
+
+        _goalCardBody = new Label
+        {
+            Position = new Vector2(20, 38),
+            Size = new Vector2(w - 40, 44),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Style(_goalCardBody, 22, new Color(0.97f, 0.88f, 0.66f, 0.98f));
+        _goalCardPanel.AddChild(_goalCardBody);
     }
 
     private void BuildTextBox(CanvasLayer ui)
