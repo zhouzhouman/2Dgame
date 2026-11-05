@@ -513,6 +513,25 @@ def check_beats(path):
                                   "day 不许回退（上一行 %d，本行 %d）" % (prev_day, day)))
             prev_day = day
 
+        # E10（选项效果）：effects 是可缺省列；一旦填了，组数必须等于选项数。
+        # 这条护栏防的是"改了选项忘了改效果"——错位的效果会安到错误的选项上，
+        # 玩家点"杀马"却扣了"卖刀"的钱，而且很难在测试里看出来。
+        opts_raw = (r.get("options") or "").strip()
+        opts_n = len([o for o in opts_raw.split("|") if o.strip()]) if opts_raw else 0
+        eff_raw = (r.get("effects") or "").strip() if "effects" in r else ""
+        if eff_raw:
+            eff_n = len(eff_raw.split("|"))
+            if opts_n == 0:
+                errors.append(Err("E10", hub or "?", bid or where, "-",
+                                  "填了 effects 却没有 options"))
+            elif eff_n != opts_n:
+                errors.append(Err("E10", hub or "?", bid or where, "-",
+                                  "options %d 条、effects %d 组，对不上" % (opts_n, eff_n)))
+            for tok in [t.strip() for grp in eff_raw.split("|") for t in grp.split(";") if t.strip()]:
+                if not re.fullmatch(r"(coin|item|guan|min|yi|troops|flag):[A-Za-z_]+(=[+-]?\d+|\s*[+-]\d+|\s*[A-Za-z_]+)|(coin|guan|min|yi|troops):[+-]\d+", tok):
+                    errors.append(Err("E10", hub or "?", bid or where, "-",
+                                      "effects 里有不认识的写法：%r" % tok))
+
         req = (r.get("requires") or "").strip()
         if not flag_expr_ok(req):
             hint = "；has(...) 不是合法写法，直接写裸旗标名" if HAS_LIKE.search(req) else ""
@@ -537,8 +556,12 @@ def check_beats(path):
                 errors.append(Err("E10", hub or "?", bid or where, "-",
                                   "options 只有 1 项 %r（多项请用 | 分隔；没有文案就留空）" % opts[0]))
         elif opts:
-            errors.append(Err("E10", hub or "?", bid or where, "-",
-                              "%s 型节拍不该有 options（实际 %r）" % (trig, raw_opts)))
+            # 旧规则是"只有 choice 型才配选项"，太紧：b02 敲门的人 就是一次抉择
+            # （老仆替你死，还是你把他推出去），b08 空仓 也是。触发方式决定"什么时候来"，
+            # 选项决定"要不要做决定"，两件事不该互斥。这里只拦 1 项（多半是分隔符写错）。
+            if len(opts) == 1:
+                errors.append(Err("E10", hub or "?", bid or where, "-",
+                                  "options 只有 1 项 %r（多项请用 | 分隔）" % opts[0]))
         if trig not in TRIGGERS:
             errors.append(Err("E10", hub or "?", bid or where, "-",
                               "trigger=%r 不在 %s" % (trig, "/".join(sorted(TRIGGERS)))))

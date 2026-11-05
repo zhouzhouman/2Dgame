@@ -252,7 +252,8 @@ public class GamePlaythroughTests
         // 选得再大也只落在最后一项；没有选项一律 0。
         Assert.Equal(3, PrologueBeats.NormalizePick(b11, 9));
         Assert.Equal("beat.b11.pick.3", PrologueBeats.PickFlagOf(b11, 9));
-        Assert.Equal("beat.b03.pick.0", PrologueBeats.PickFlagOf(b03, 9));
+        // b03 补上了四个选项（杀马/抢村/卖书/卖刀），所以越界的 9 落在最后一项
+        Assert.Equal("beat.b03.pick.3", PrologueBeats.PickFlagOf(b03, 9));
     }
 
     [Fact]

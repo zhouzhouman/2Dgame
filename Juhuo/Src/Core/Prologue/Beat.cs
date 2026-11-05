@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace Juhuo.Core;
 
 /// <summary>
@@ -25,4 +28,13 @@ public sealed record Beat(
     string[] Sets,
     string Trigger,
     string[] Options,
-    string Note);
+    string Note)
+{
+    /// <summary>
+    /// 每个选项的效果，下标与 <see cref="Options"/> 一一对应（<c>beats.csv</c> 的 <c>effects</c> 列）。
+    /// 缺列、整格空白、或某个选项没写效果时，对应位置是**空组**而不是 null——
+    /// 结算方不必再判空。非选择型节拍是空表。
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<Effect>> Effects { get; init; } =
+        Array.Empty<IReadOnlyList<Effect>>();
+}

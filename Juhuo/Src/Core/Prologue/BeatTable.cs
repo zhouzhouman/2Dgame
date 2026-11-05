@@ -14,7 +14,7 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class BeatTable
 {
-    /// <summary>表里必须有的列，缺一列即视为坏表（S1-06）。</summary>
+    /// <summary>表里必须有的列，缺一列即视为坏表（S1-06）。<c>effects</c> 是可选的。</summary>
     private static readonly string[] RequiredColumns =
     {
         "id", "name", "hub", "day", "requires", "sets", "trigger", "note",
@@ -55,7 +55,9 @@ public sealed class BeatTable
     /// </summary>
     /// <param name="csvText">CSV 全文。</param>
     /// <returns>节拍表。</returns>
-    /// <exception cref="InvalidDataException">缺列、空 id、重复 id、day 不是整数。</exception>
+    /// <exception cref="InvalidDataException">
+    /// 缺列、空 id、重复 id、day 不是整数、sets 旗标名非法、effects 组数与选项数不符或语法不对。
+    /// </exception>
     public static BeatTable FromCsv(string csvText)
     {
         var rows = Csv.Parse(csvText ?? "");
@@ -101,6 +103,13 @@ public sealed class BeatTable
                     throw new InvalidDataException(
                         $"节拍表第 {line} 行：sets 里的旗标名「{flag}」不合法（须符合 FlagStore.IsValidName）。");
 
+            var options = SplitOptions(Get("options"));
+
+            // effects 列是**可选**的：缺列 = 这一拍所有选项都没有效果（旧表照读）。
+            // 有列但写空了，也按"全都没配"处理；有内容时组数必须与 options 条数一一对应，
+            // 对不上就在这里带行号炸——那是最容易犯、也最难从玩家反馈里认出来的错。
+            var effects = BeatEffect.ParseAll(Get("effects"), line, options.Length);
+
             list.Add(new Beat(
                 id,
                 Get("name"),
@@ -109,8 +118,11 @@ public sealed class BeatTable
                 Get("requires"),
                 sets,
                 Get("trigger"),
-                SplitOptions(Get("options")),
-                Get("note")));
+                options,
+                Get("note"))
+            {
+                Effects = effects,
+            });
         }
 
         return new BeatTable(list);

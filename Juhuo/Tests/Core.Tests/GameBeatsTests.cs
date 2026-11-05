@@ -161,20 +161,21 @@ public class GameBeatsTests
     }
 
     [Fact]
-    public void 没有选项的选择拍_确认后置pick0()
+    public void 没有选项的拍_确认后落pick0()
     {
-        var beats = Fresh(out var table, out var flags);
+        // 真表十二拍现在都有选项了（b02/b03/b08 的空白已补），所以这条用内联表：
+        // "没有选项"这条退路仍要留着，将来新加的拍可能还没写文案。
+        var table = BeatTable.FromCsv(
+            "id,name,hub,day,requires,sets,trigger,options,note\n" +
+            "b01,无选项的拍,hub1,1,,beat.b01.done,choice,,内联\n");
 
-        beats.Complete(B(table, "b01"));
-        beats.Complete(B(table, "b02"));
+        var flags = new FlagStore();
+        var beats = PrologueBeats.FromState(table, flags, null);
 
-        var b03 = B(table, "b03");
-        Assert.Empty(b03.Options);
+        Assert.True(beats.Choose(B(table, "b01"), 3));
 
-        Assert.True(beats.Choose(b03, 3));
-
-        Assert.True(flags.Has("beat.b03.pick.0", "hub2"));
-        Assert.False(flags.Has("beat.b03.pick.3", "hub2"));
+        Assert.True(flags.Has("beat.b01.pick.0", "hub1"));
+        Assert.False(flags.Has("beat.b01.pick.3", "hub1"));
     }
 
     [Fact]
