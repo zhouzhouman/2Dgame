@@ -31,6 +31,10 @@
         国号四个且不许撞真实朝代
     E16 travel.csv / intro.csv / portraits.csv：42 个有向组合齐全且来回差 ≤2、
         开场 6–10 句且 speaker/portrait 指得住 npcs.csv、30 行立绘参数在范围内且同 hub 不撞脸
+    E17 每拍一句目标（beats.goal）/ 六功臣（companions.csv）/ 三句总目标（goals.csv）/
+        教学步骤（tutorial.csv）：beats.goal 十二拍非空且 ≤14 字、companions 六行且 id 与
+        office 不重复、name 在 npcs.csv 里、loyalty/ambition 1–100、goals 三档齐全、
+        tutorial 的 key 顺序与 Onboarding.Stage 对得上
 
 判定口径
     * 通行格 = 地面字符落在 '.', ',', ':', '+', '^'（与 TerrainMap.IsWalkable 一致）。
@@ -101,6 +105,19 @@
       个人，两行的七个参数因此必须一致（不一致就是两个人长了同一张脸，或一个人换了两张）。
       参数范围是美术规范里的枚举值，越界在引擎侧只会被夹到边界，看不出是内容写错了。
       同一 hub 里不许两个人七个参数全同：立绘是玩家唯一的辨识手段，撞脸等于没画。
+    * E17 的 beats.goal 是「玩家在那一刻要干什么」，不是剧情摘要：十二字以内（本表卡 14 字）、
+      非空、不重复，也不许出现「抉择 / 事件 / 剧情 / 任务」这类总结词——写「面对抉择」等于
+      什么都没说，玩家读完还是不知道该抬手做什么。
+    * E17 的 companions.csv 就是 §18.4 里那六位：阿禾、沈砚、老鸦、玄真、裴无咎、小满。
+      柳三娘在 §18.4 有行，但她走商路、不参与分封，写进功臣表就是设计错。
+      name 必须在 npcs.csv 里出现过——分封屏要挂立绘，名字对不上就没有脸可挂。
+      office 不许重复（一官不封二臣，分封屏上两行会一模一样）。
+    * E17 的 goals.csv 三档 when 缺一不可：缺 start 则开局没有目标，缺 realm 则坐上去之后
+      一片空白，缺 deficit 则十二拍走完却卡在转段条件上时，玩家以为游戏坏了。
+    * E17 的 tutorial.csv 与 Onboarding.cs 的 enum Stage 对齐：表里能多出 Src 还没有的步
+      （目前是 map / bag / trust 三步），但 Onboarding 里有的每一步，表里都必须有、且顺序
+      一致。对不上的后果是玩家会看到一段教了却验不了的提示，或者走完五步之后卡住不动。
+      顺序判的是「子序列」：Onboarding 后续补上 Stage.Map / Bag / Trust 也仍然成立。
 
 退出码 0 无错 / 1 有错 / 2 跑不起来（文件缺失等）。
 """
@@ -189,6 +206,23 @@ PORTRAIT_ROWS = 30                         # npcs.csv 是 30 处放置（28 个�
 PORTRAIT_PARAMS = ("skin", "hair", "style", "beard", "hat", "robe", "mark")
 PORTRAIT_RANGES = {"skin": (1, 4), "hair": (1, 6), "style": (1, 4), "beard": (0, 3),
                    "hat": (0, 4), "robe": (1, 6), "mark": (0, 4)}
+
+# E17：一句话目标（beats.goal）/ 六功臣 / 三句总目标 / 教学步骤
+GOAL_COLS = ["when", "text", "note"]              # goals.csv：起手 / 已转段 / 走完没转段
+COMPANION_COLS = ["id", "name", "office", "role", "loyalty", "ambition", "note"]
+TUTORIAL_COLS = ["seq", "key", "title", "hint", "note"]
+GOAL_WHENS = ("start", "realm", "deficit")        # 三档缺一，玩家就会在某一整段里看见空白
+GOAL_TEXT_MAX = 14                                # 一句话；再长就是剧情摘要，不是"要干什么"
+GOAL_BANNED = ("抉择", "事件", "剧情", "任务")      # 总结词：写了等于什么都没说
+COMPANION_ROWS = 6                                # §18.4 的六位（柳三娘不算）
+COMPANION_NAMES = ("阿禾", "沈砚", "老鸦", "玄真", "裴无咎", "小满")
+COMPANION_EXCLUDED = {"柳三娘": "她走商路、不参与分封（§18.4 有她的行，但功臣是六个人）"}
+# 教学顺序必须与 Onboarding.Stage 一致；中间三步是"必须亲手做一次"的（Src 里还没有 Stage）
+TUTORIAL_KEYS = ("move", "look", "search", "map", "bag", "trust", "talk", "leave")
+TUTORIAL_ROWS = len(TUTORIAL_KEYS)                # 走/看/搜 + 地图/囊/信任 + 说/出 = 8 步
+TUTORIAL_INSERTED = ("map", "bag", "trust")
+ONBOARDING_CS = os.path.join(ROOT, "Juhuo", "Src", "Game", "Onboarding.cs")
+STAGE_ENUM = re.compile(r"enum\s+Stage\s*\{([^}]*)\}", re.S)
 
 
 def need_kind(needs):
@@ -1312,11 +1346,258 @@ def check_portraits(path, npcs):
     return errors
 
 
+# ————————————————————————— E17 目标 / 功臣 / 教学 —————————————————————————
+
+def onboard_stages(path=ONBOARDING_CS):
+    """Onboarding.cs 里 enum Stage 的步骤名（小写，去掉收尾的 Done）。读不到返回 None。"""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = STAGE_ENUM.search(text)
+    if not m:
+        return None
+    names = [n.lower() for n in re.findall(r"([A-Za-z_]\w*)\s*=", m.group(1))]
+    names = [n for n in names if n != "done"]
+    return names or None
+
+
+def _is_subsequence(sub, seq):
+    """sub 是不是 seq 的子序列（顺序一致，允许中间有别的项）。"""
+    it = iter(seq)
+    return all(any(x == y for y in it) for x in sub)
+
+
+def check_beat_goals(path):
+    """E17：十二拍各一句「此刻要干什么」，非空、≤14 字、不重复、不是剧情摘要。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E17", "-", "beats.csv", "-", "找不到 beats.csv")]
+
+    missing, rows = read_table(path, BEATS_COLS + ["goal"])
+    if "goal" in missing:
+        return [Err("E17", "-", "beats.csv", "-",
+                    "表头缺列：goal（玩家看不到「这一刻要干什么」）")]
+    if missing:                      # 别的列缺了是 E10 的事，这里不重复报
+        return errors
+
+    if len(rows) != BEATS_ROWS:
+        errors.append(Err("E17", "-", "beats.csv", "-",
+                          "行数应为 %d，实际 %d" % (BEATS_ROWS, len(rows))))
+
+    seen = {}
+    for n, r in enumerate(rows, start=2):
+        bid = (r.get("id") or "").strip() or "第 %d 行" % n
+        hub = (r.get("hub") or "?").strip()
+        goal = (r.get("goal") or "").strip()
+
+        if not goal:
+            errors.append(Err("E17", hub, bid, "-",
+                              "goal 为空（玩家不知道这一刻要干什么）"))
+            continue
+        if len(goal) > GOAL_TEXT_MAX:
+            errors.append(Err("E17", hub, bid, "-",
+                              "goal %r 有 %d 字，超过 %d 字——这么长写的是剧情摘要，"
+                              "不是玩家此刻的动作" % (goal, len(goal), GOAL_TEXT_MAX)))
+        for word in GOAL_BANNED:
+            if word in goal:
+                errors.append(Err("E17", hub, bid, "-",
+                                  "goal 里有 %r：这是总结词的写法，换成他这一刻要做的事"
+                                  % word))
+        seen.setdefault(goal, []).append(bid)
+
+    for goal, bids in seen.items():
+        if len(bids) > 1:
+            errors.append(Err("E17", "-", "goal:" + goal, "-",
+                              "同一句目标用在 %d 拍（%s）" % (len(bids), "、".join(bids))))
+    return errors
+
+
+def check_companions(path, npc_names):
+    """E17：六行、id / office / name 不重复、忠诚与野心 1..100、名字在 npcs.csv 里。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E17", "-", "companions.csv", "-",
+                    "找不到 companions.csv（分封屏上没有功臣）")]
+
+    missing, rows = read_table(path, COMPANION_COLS)
+    if missing:
+        return [Err("E17", "-", "companions.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    if len(rows) != COMPANION_ROWS:
+        errors.append(Err("E17", "-", "companions.csv", "-",
+                          "行数应为 %d（六功臣），实际 %d" % (COMPANION_ROWS, len(rows))))
+
+    ids, offices, names = {}, {}, {}
+    for n, r in enumerate(rows, start=2):
+        cid = (r.get("id") or "").strip()
+        name = (r.get("name") or "").strip()
+        office = (r.get("office") or "").strip()
+        who = "%s/%s" % (cid or "?", name or "第 %d 行" % n)
+
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", cid):
+            errors.append(Err("E17", "-", who, "-",
+                              "id %r 应是小写英文（分封的旗标名由 id 拼出来）" % cid))
+        elif cid in ids:
+            errors.append(Err("E17", "-", who, "-",
+                              "id %r 重复（第 %d 行已有）" % (cid, ids[cid])))
+        else:
+            ids[cid] = n
+
+        if not name:
+            errors.append(Err("E17", "-", who, "-", "name 为空"))
+        elif name in COMPANION_EXCLUDED:
+            errors.append(Err("E17", "-", who, "-",
+                              "%s 不算功臣（%s），别写进这张表"
+                              % (name, COMPANION_EXCLUDED[name])))
+        elif npc_names and name not in npc_names:
+            errors.append(Err("E17", "-", who, "-",
+                              "name %r 不在 npcs.csv（分封屏上没有立绘可挂）" % name))
+        names[name] = names.get(name, 0) + 1
+
+        if not office:
+            errors.append(Err("E17", "-", who, "-", "office 为空（开国了总得有个官）"))
+        elif office in offices:
+            errors.append(Err("E17", "-", who, "-",
+                              "office %r 重名（第 %d 行已封过）——一官不封二臣，"
+                              "分封屏上两行会一模一样" % (office, offices[office])))
+        else:
+            offices[office] = n
+
+        if not (r.get("role") or "").strip():
+            errors.append(Err("E17", "-", who, "-", "role 为空（一句话功能）"))
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E17", "-", who, "-",
+                              "note 为空（出处与依据要写在这：§18.4 哪一行）"))
+
+        for col in ("loyalty", "ambition"):
+            val, why = parse_coord(r.get(col))
+            if why:
+                errors.append(Err("E17", "-", who, "-",
+                                  "%s %s（要 1..100 的整数）" % (col, why)))
+            elif not 1 <= val <= 100:
+                errors.append(Err("E17", "-", who, "-", "%s=%d 应在 1..100" % (col, val)))
+
+    for name, cnt in names.items():
+        if cnt > 1:
+            errors.append(Err("E17", "-", name, "-", "name 重复 %d 次（同一个人只能封一次）" % cnt))
+    for want in COMPANION_NAMES:
+        if not names.get(want):
+            errors.append(Err("E17", "-", want, "-",
+                              "六功臣缺 %s（§18.4 的人少了一个，正篇的个人线就断了）" % want))
+    return errors
+
+
+def check_goals(path):
+    """E17：三行、when 只认 start / realm / deficit 且各一行、text 与 note 非空。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E17", "-", "goals.csv", "-",
+                    "找不到 goals.csv（屏幕上没有「当前目标」这一句）")]
+
+    missing, rows = read_table(path, GOAL_COLS)
+    if missing:
+        return [Err("E17", "-", "goals.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    if len(rows) != len(GOAL_WHENS):
+        errors.append(Err("E17", "-", "goals.csv", "-",
+                          "行数应为 %d（%s），实际 %d"
+                          % (len(GOAL_WHENS), " / ".join(GOAL_WHENS), len(rows))))
+
+    got = {}
+    for n, r in enumerate(rows, start=2):
+        when = (r.get("when") or "").strip()
+        who = when or "第 %d 行" % n
+
+        if when not in GOAL_WHENS:
+            errors.append(Err("E17", "-", who, "-",
+                              "when 只认 %s" % " / ".join(GOAL_WHENS)))
+        elif when in got:
+            errors.append(Err("E17", "-", when, "-", "when 重复（第 %d 行已有）" % got[when]))
+        else:
+            got[when] = n
+
+        if not (r.get("text") or "").strip():
+            errors.append(Err("E17", "-", who, "-", "text 为空（这一档没有目标可显示）"))
+        if not (r.get("note") or "").strip():
+            errors.append(Err("E17", "-", who, "-", "note 为空（依据要写在这）"))
+
+    for when in GOAL_WHENS:
+        if when not in got:
+            errors.append(Err("E17", "-", when, "-",
+                              "缺 %s 这一档（那一段里玩家会看见空白的目标）" % when))
+    return errors
+
+
+def check_tutorial(path, stages=None):
+    """E17：行数与 key 顺序、seq 连续、三字段非空，且与 Onboarding.Stage 对得上。"""
+    errors = []
+    if not os.path.isfile(path):
+        return [Err("E17", "-", "tutorial.csv", "-",
+                    "找不到 tutorial.csv（教学又只剩代码里硬写的那几句）")]
+
+    missing, rows = read_table(path, TUTORIAL_COLS)
+    if missing:
+        return [Err("E17", "-", "tutorial.csv", "-", "表头缺列：%s" % ", ".join(missing))]
+
+    if len(rows) != TUTORIAL_ROWS:
+        errors.append(Err("E17", "-", "tutorial.csv", "-",
+                          "行数应为 %d（%s），实际 %d"
+                          % (TUTORIAL_ROWS, " / ".join(TUTORIAL_KEYS), len(rows))))
+
+    keys = []
+    for i, r in enumerate(rows, start=1):
+        seq = (r.get("seq") or "").strip()
+        key = (r.get("key") or "").strip()
+        who = "seq:%s" % (seq or "第 %d 行" % (i + 1))
+
+        got, why = parse_coord(seq)
+        if why or got != i:
+            errors.append(Err("E17", "-", "tutorial.csv", who,
+                              "seq 应连续从 1 起（第 %d 行应为 %d，实际 %r）" % (i, i, seq)))
+
+        if key in TUTORIAL_KEYS:
+            keys.append(key)
+        else:
+            errors.append(Err("E17", "-", who, "-",
+                              "key %r 不在 %s 之内" % (key, " / ".join(TUTORIAL_KEYS))))
+
+        for col in ("title", "hint", "note"):
+            if not (r.get(col) or "").strip():
+                errors.append(Err("E17", "-", who, "-", "%s 为空" % col))
+
+    if keys != list(TUTORIAL_KEYS):
+        errors.append(Err("E17", "-", "tutorial.csv", "-",
+                          "key 顺序应为 %s，实际 %s"
+                          % (" → ".join(TUTORIAL_KEYS), " → ".join(keys) or "空")))
+
+    # 与 Onboarding.cs 的 enum Stage 对齐：代码里有的每一步，表里都得有，且顺序一致。
+    # 判子序列，是为了 E2 补上 Stage.Map / Bag / Trust 之后这张表仍然成立。
+    if stages is None:
+        stages = onboard_stages()
+    if stages is None:
+        errors.append(Err("E17", "-", "Onboarding.cs", "-",
+                          "读不到 enum Stage（教学表无从对齐）"))
+        return errors
+
+    lost = [s for s in stages if s not in keys]
+    for s in lost:
+        errors.append(Err("E17", "-", "tutorial.csv", "-",
+                          "Onboarding 有 Stage.%s，表里没有对应的教学行" % s.capitalize()))
+    if not lost and not _is_subsequence(stages, keys):
+        errors.append(Err("E17", "-", "tutorial.csv", "-",
+                          "key 顺序与 Onboarding.Stage 不一致（Onboarding：%s；表：%s）"
+                          % (" → ".join(stages), " → ".join(keys))))
+    return errors
+
+
 def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
     """返回 (errors, notes, checked, note_detail)。不打印，不做退出码。
 
     doc_csv / beats_path 传 None = 这次不查（selftest 用的是临时数据，比不了真实的文档 CSV）。
-    items.csv / gifts.csv / trust.csv / routes.csv 始终查：它们是手维护表，与文档 CSV 无关。
+    items.csv / gifts.csv / trust.csv / routes.csv / companions.csv / goals.csv / tutorial.csv
+    始终查：它们是手维护表，与文档 CSV 无关。
     """
     errors = []
     notes = Counter()
@@ -1519,13 +1800,22 @@ def validate(maps_dir, data_dir, doc_csv=None, beats_path=None):
                               {name for _hub, name in npc_names}))
     errors.extend(check_portraits(os.path.join(data_dir, "portraits.csv"), npcs))
 
+    # —— E17 一句话目标 / 六功臣 / 三句总目标 / 教学步骤 ——
+    if beats_path:
+        errors.extend(check_beat_goals(beats_path))
+    errors.extend(check_companions(os.path.join(data_dir, "companions.csv"),
+                                   {name for _hub, name in npc_names}))
+    errors.extend(check_goals(os.path.join(data_dir, "goals.csv")))
+    errors.extend(check_tutorial(os.path.join(data_dir, "tutorial.csv")))
+
     errors.sort(key=lambda e: e.sort_key())
     return errors, notes, checked, note_detail
 
 
 def report(errors, notes, checked, note_detail, show_notes):
     print("《举火》内容校验 · points + npcs + maps(hub1..hub7) + beats.csv + items/gifts + "
-          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 位移/开场/立绘 + 两份 points 同源")
+          "信任轴/路线 + 官市/黑市 + 攻城四法/招兵 + 誓约/国号 + 位移/开场/立绘 + "
+          "目标/功臣/教学 + 两份 points 同源")
     for e in errors:
         print(e.line())
 
@@ -1748,6 +2038,44 @@ def _selftest_e16(tmp):
     return pair_hit and speaker_hit and range_hit
 
 
+def _selftest_e17(tmp):
+    """E17 自测：功臣少一人 + office 重名 + goal 为空，三处都必须报出。"""
+    _, npcs = read_table(os.path.join(DEFAULT_DATA, "npcs.csv"), NPC_COLS)
+    names = {(r.get("name") or "").strip() for r in npcs}
+    names.discard("")
+
+    _, comps = read_table(os.path.join(DEFAULT_DATA, "companions.csv"), COMPANION_COLS)
+    _, beats = read_table(os.path.join(DEFAULT_DATA, "beats.csv"), BEATS_COLS + ["goal"])
+
+    d = os.path.join(tmp, "e17")
+    os.makedirs(d)
+
+    # ① 少一人：去掉最后一行（六功臣只剩五个）
+    less = os.path.join(d, "companions_less.csv")
+    _write_csv(less, COMPANION_COLS, [dict(r) for r in comps][:-1])
+
+    # ② 一官封二臣：第二行抢第一行的 office
+    dup = [dict(r) for r in comps]
+    dup[1]["office"] = dup[0]["office"]
+    dup_path = os.path.join(d, "companions_dup.csv")
+    _write_csv(dup_path, COMPANION_COLS, dup)
+
+    # ③ 某一拍的目标是空的
+    bad_beats = [dict(r) for r in beats]
+    bad_beats[0]["goal"] = ""
+    beats_path = os.path.join(d, "beats.csv")
+    _write_csv(beats_path, BEATS_COLS + ["goal"], bad_beats)
+
+    less_msgs = [e.msg for e in check_companions(less, names)]
+    dup_msgs = [e.msg for e in check_companions(dup_path, names)]
+    goal_msgs = [e.msg for e in check_beat_goals(beats_path)]
+
+    short_hit = any("行数应为 6" in m for m in less_msgs) and any("六功臣缺" in m for m in less_msgs)
+    office_hit = any("office" in m and "重名" in m for m in dup_msgs)
+    goal_hit = any("goal 为空" in m for m in goal_msgs)
+    return short_hit and office_hit and goal_hit
+
+
 def selftest():
     """在临时目录复制真实数据并注入 5 个错，五类必须全部报出。Content 只读不写。"""
     tmp = tempfile.mkdtemp(prefix="juhuo_selftest_")
@@ -1784,9 +2112,11 @@ def selftest():
                            ("trust.csv", TRUST_COLS), ("routes.csv", ROUTE_COLS),
                            ("shops.csv", SHOP_COLS), ("siege.csv", SIEGE_COLS),
                            ("recruit.csv", RECRUIT_COLS), ("oaths.csv", OATH_COLS),
-                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS),
+                           ("realms.csv", REALM_COLS), ("beats.csv", BEATS_COLS + ["goal"]),
                            ("travel.csv", TRAVEL_COLS), ("intro.csv", INTRO_COLS),
-                           ("portraits.csv", PORTRAIT_COLS)):
+                           ("portraits.csv", PORTRAIT_COLS),
+                           ("companions.csv", COMPANION_COLS), ("goals.csv", GOAL_COLS),
+                           ("tutorial.csv", TUTORIAL_COLS)):
             _, rows_ = read_table(os.path.join(DEFAULT_DATA, name), cols)
             _write_csv(os.path.join(data_dir, name), cols, rows_)
 
@@ -1830,6 +2160,10 @@ def selftest():
             print("[selftest] 位移/开场/立绘 E16 未报出")
             return 1
         print("[selftest] 位移/开场/立绘 E16 1/1")
+        if not _selftest_e17(tmp):
+            print("[selftest] 目标/功臣/教学 E17 未报出")
+            return 1
+        print("[selftest] 目标/功臣/教学 E17 1/1")
         print("[selftest] %d/5" % len(hit))
         return 0
     finally:
@@ -1844,7 +2178,7 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="《举火》内容校验器")
     ap.add_argument("--selftest", action="store_true",
-                    help="造错样本：E01–E05 五个 + E09..E16 各一处")
+                    help="造错样本：E01–E05 五个 + E09..E17 各一处")
     ap.add_argument("--notes", action="store_true", help="列出被跳过的引用明细")
     ap.add_argument("--maps", default=DEFAULT_MAPS, help="地图目录")
     ap.add_argument("--data", default=DEFAULT_DATA, help="数据目录")

@@ -37,4 +37,10 @@ public sealed record Beat(
     /// </summary>
     public IReadOnlyList<IReadOnlyList<Effect>> Effects { get; init; } =
         Array.Empty<IReadOnlyList<Effect>>();
+
+    /// <summary>
+    /// 这一拍此刻该做什么，一句话（<c>beats.csv</c> 的 <c>goal</c> 列）。
+    /// 缺列或整格空白时是空串而不是 null——旧表照读，`GoalTable.Current` 会退回到起手那句。
+    /// </summary>
+    public string Goal { get; init; } = "";
 }

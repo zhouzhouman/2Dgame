@@ -555,7 +555,7 @@ public class TransitionTests
 
         var state = SaveState.FromJson(json);
 
-        Assert.Equal(5, state.Version);
+        Assert.Equal(SaveState.CurrentVersion, state.Version);
         Assert.Equal("", state.Prologue.Capital);
         Assert.Equal("", state.Prologue.Realm);
         Assert.Empty(state.Prologue.Oaths);
@@ -585,7 +585,7 @@ public class TransitionTests
         Assert.Contains("\"debts\"", json);
 
         var back = SaveState.FromJson(json);
-        Assert.Equal(5, back.Version);
+        Assert.Equal(SaveState.CurrentVersion, back.Version);
         Assert.Equal("hub5", back.Prologue.Capital);
         Assert.Equal("xie", back.Prologue.Realm);
         Assert.Equal(new[] { "salt", "nosurrender", "land" }, back.Prologue.Oaths);

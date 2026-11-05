@@ -13,10 +13,9 @@ namespace Juhuo.Core;
 public sealed class SaveState
 {
     /// <summary>
-    /// 当前存档版本（schema v5：序章多了 prologue.capital / realm / oaths / debts，
-    /// 即转段结算的四样东西）。
+    /// 当前存档版本（schema v6：序章多了 prologue.enfeoffs，即六位功臣各封了哪一档）。
     /// </summary>
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     /// <summary>还能读的最低版本（更早的按"需迁移"处理）。</summary>
     public const int MinVersion = 1;
@@ -133,6 +132,8 @@ public sealed class SaveState
         // v3 及更早没有 prologue.troops：读进来是 0，其余字段一个不动。
         // v4 及更早没有 prologue.capital / realm / oaths / debts：读进来是空，其余字段一个不动
         // （也就是"还没转过段"，说得通）。
+        // v5 及更早没有 prologue.enfeoffs：读进来是空字典，其余字段一个不动
+        // （那时候还没有分封这一屏，谁都没封过）。
         // 只升不降：比当前版本新的档保持原样，交给 IsTooNew 拒收。
         if (Version < CurrentVersion) Version = CurrentVersion;
 
@@ -183,6 +184,13 @@ public sealed class PrologueState
     /// <summary>没被选进国策、留到正篇按期限到期的誓约 id（schema v5 新增）。</summary>
     public List<string> Debts { get; set; } = new();
 
+    /// <summary>
+    /// 六位功臣各封了哪一档：功臣 id → <c>heavy</c> / <c>light</c> / <c>none</c>（schema v6 新增）。
+    /// v5 及更早的档没有这一项，读进来是空字典——那时候还没有分封这一屏，说得通。
+    /// 这是"当时的封赏"，不是"现在的关系"：厚封的野心家将来会成权臣，那是正篇另算的账。
+    /// </summary>
+    public Dictionary<string, string> Enfeoffs { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>未知字段：保留并写回。</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; } = new();
@@ -201,6 +209,12 @@ public sealed class PrologueState
 
         Debts ??= new List<string>();
         Debts.RemoveAll(string.IsNullOrEmpty);
+
+        // v6：封赏。为空字典是合法状态（还没分封，或从 v5 升上来的老档）。
+        Enfeoffs ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var key in new List<string>(Enfeoffs.Keys))
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(Enfeoffs[key]))
+                Enfeoffs.Remove(key);
     }
 }
 

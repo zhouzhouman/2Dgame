@@ -95,7 +95,7 @@ public class SaveStateTests
     {
         var json = new SaveState().ToJson();
 
-        Assert.Contains("\"version\": 5", json);
+        Assert.Contains($"\"version\": {SaveState.CurrentVersion}", json);
         Assert.Contains("\n  \"day\": 1", json);
     }
 
@@ -104,7 +104,7 @@ public class SaveStateTests
     {
         var s = SaveState.FromJson("{}");
 
-        Assert.Equal(5, s.Version);
+        Assert.Equal(SaveState.CurrentVersion, s.Version);
         Assert.Equal(0, s.Seed);
         Assert.Equal(1, s.Day);
         Assert.Equal("prologue", s.Tense);

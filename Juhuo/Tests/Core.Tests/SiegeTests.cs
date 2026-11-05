@@ -443,7 +443,7 @@ public class SiegeTests
 
         var state = SaveState.FromJson(json);
 
-        Assert.Equal(5, state.Version);
+        Assert.Equal(SaveState.CurrentVersion, state.Version);
         Assert.Equal(0, state.Prologue.Troops);
         Assert.Equal(new[] { "t1", "t2" }, state.Prologue.BeatsDone);
         Assert.Equal(9, state.Day);
@@ -459,7 +459,7 @@ public class SiegeTests
         Assert.Contains("\"troops\": 40", json);
 
         var back = SaveState.FromJson(json);
-        Assert.Equal(5, back.Version);
+        Assert.Equal(SaveState.CurrentVersion, back.Version);
         Assert.Equal(40, back.Prologue.Troops);
         Assert.Equal(17, back.Day);
     }

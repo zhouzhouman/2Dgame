@@ -14,7 +14,7 @@ namespace Juhuo.Core;
 /// </summary>
 public sealed class BeatTable
 {
-    /// <summary>表里必须有的列，缺一列即视为坏表（S1-06）。<c>effects</c> 是可选的。</summary>
+    /// <summary>表里必须有的列，缺一列即视为坏表（S1-06）。<c>effects</c> / <c>goal</c> 是可选的。</summary>
     private static readonly string[] RequiredColumns =
     {
         "id", "name", "hub", "day", "requires", "sets", "trigger", "note",
@@ -122,6 +122,7 @@ public sealed class BeatTable
                 Get("note"))
             {
                 Effects = effects,
+                Goal = Get("goal"),
             });
         }
 
