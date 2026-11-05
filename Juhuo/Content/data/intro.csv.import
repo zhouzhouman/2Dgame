@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://duhqvqqw8jpdi"
+
+[deps]
+
+files=["res://Content/data/intro.speaker.translation", "res://Content/data/intro.portrait.translation", "res://Content/data/intro.text.translation", "res://Content/data/intro.note.translation"]
+
+source_file="res://Content/data/intro.csv"
+dest_files=["res://Content/data/intro.speaker.translation", "res://Content/data/intro.portrait.translation", "res://Content/data/intro.text.translation", "res://Content/data/intro.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

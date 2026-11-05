@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://bqrttkj7pubxv"
+
+[deps]
+
+files=["res://Content/data/portraits.skin.translation", "res://Content/data/portraits.hair.translation", "res://Content/data/portraits.style.translation", "res://Content/data/portraits.beard.translation", "res://Content/data/portraits.hat.translation", "res://Content/data/portraits.robe.translation", "res://Content/data/portraits.mark.translation", "res://Content/data/portraits.note.translation"]
+
+source_file="res://Content/data/portraits.csv"
+dest_files=["res://Content/data/portraits.skin.translation", "res://Content/data/portraits.hair.translation", "res://Content/data/portraits.style.translation", "res://Content/data/portraits.beard.translation", "res://Content/data/portraits.hat.translation", "res://Content/data/portraits.robe.translation", "res://Content/data/portraits.mark.translation", "res://Content/data/portraits.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

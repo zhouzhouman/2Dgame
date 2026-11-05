@@ -240,6 +240,9 @@ public partial class Main : Node2D
     /// <summary>这一局是 <c>--transition</c> 自检（同样不碰玩家那份档）。</summary>
     private bool _transitionRun;
 
+    /// <summary>这一局是 <c>--effects</c> 自检：三条真实选项各结算一次，打印然后退出（S3-02c）。</summary>
+    private bool _effectsRun;
+
     /// <summary>提示停留多久之后开始淡出（秒）。</summary>
     private const float ToastHold = 2f;
 
@@ -266,6 +269,14 @@ public partial class Main : Node2D
 
     /// <summary>选项面板底下那行提示的常态文案（选中被门禁挡住时临时换成拒绝的那句）。</summary>
     private string _choiceFootDefault = "";
+
+    /// <summary>
+    /// 敲门 / 搜查触发的、带选项的那一拍（S3-02c）。
+    ///
+    /// 触发那一刻对话框正要弹出来，面板压上去会被下一句文本盖住，所以先记在这里，
+    /// 由 <see cref="TryShowChoice"/> 在"面板终于放得下"的时候（读完这一页、教程走完、换空间）补弹。
+    /// </summary>
+    private string? _deferredChoiceId;
 
     /// <summary>这份档来自更新的版本，不许读也不许盖（rule_flags_save.md §4）。</summary>
     private bool _saveBlocked;
@@ -368,7 +379,7 @@ public partial class Main : Node2D
 
         // 跑批不学走路：脚本自己会走位。教程没标完成的话，
         // TryShowChoice 会一直让路，通关脚本就一拍都答不了（门禁当场红过一次）。
-        if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun) _tut.Finish();
+        if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun || _effectsRun) _tut.Finish();
 
         BuildUi();
 
@@ -456,7 +467,7 @@ public partial class Main : Node2D
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
             // 新档（_newGame）绝不读档：菜单那条路会先把旧档改名，但调试入口没改名，
             // 少了这一条就会把旧档读进来，于是"开局 30 文"永远发不出去（实测踩过）。
-            else if (!_shopRun && !_siegeRun && !_transitionRun && !_newGame
+            else if (!_shopRun && !_siegeRun && !_transitionRun && !_effectsRun && !_newGame
                      && !WantsMapDemo(_args) && !WantsIntroDemo(_args)) LoadSave();
 
             // 新档的开局资金（S3-01c）：钱数只有 StartKit 一份，这里只负责把它放进囊里。
@@ -712,6 +723,23 @@ public partial class Main : Node2D
             else
             {
                 GD.Print($"{ShopReport.Prefix} 初始化没完成（shops.csv / items.csv / trust.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
+        // 开发辅助：--effects 三条真实选项各结算一次（杀马 / 卖书 / 写给旧部），打印然后退出（S3-02c）
+        if (_effectsRun)
+        {
+            if (_beatTable is not null && _items is not null)
+            {
+                foreach (var line in EffectsDemo.Run(_beatTable, _items))
+                    GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{BeatEffectWiring.Prefix} 初始化没完成（beats.csv / items.csv 读不进来），跑不了");
                 _exitCode = 1;
             }
 
@@ -1347,6 +1375,11 @@ public partial class Main : Node2D
 
     private void ShowText(string head, string body)
     {
+        // 对话框要压上来了：选项面板先让开，读完这一页 CloseBox 会再弹（S3-02c）。
+        // 敲门是在"这一页还没画出来"的时候结算的，不让开的话两层面板会叠在一起，
+        // 玩家看见的是"一句话 + 一张决断"，按 E 也不知道是在关哪一层。
+        DeferOpenChoice();
+
         // 说话的人是谁，由"伸手够得着的那个人"决定——翻东西翻出来的那一页没有人，左边就不出人。
         var who = _world?.NearestSpeaker();
         var card = DialogueCard.From(head, body, who?.Name, _portraits);
@@ -1395,6 +1428,18 @@ public partial class Main : Node2D
         _hint.Visible = false;          // 提示条会被对话框压住，干脆让开
 
         UpdateChrome();
+    }
+
+    /// <summary>
+    /// 面板正开着时来了对话框：先收面板、记着它，读完那一页再弹。
+    /// 攻城面板不让——它的四法选择有中途状态，收起来等于让玩家重挑一遍。
+    /// </summary>
+    private void DeferOpenChoice()
+    {
+        if (!_choiceOpen || _choiceBeat is null || _siegeScreen is not null) return;
+
+        _deferredChoiceId = _choiceBeat.Id;
+        CloseChoice(restoreTutorial: false);
     }
 
     private void CloseBox()
@@ -2289,14 +2334,37 @@ public partial class Main : Node2D
         // （玩家报的「没有新手教程」就是这个：新档一进场，b01 焚账先弹出来把教程压住了。）
         if (!_tut.Done) return;
 
-        var beat = _beats.PendingChoice(_world.Hub);
+        var beat = _beats.PendingChoice(_world.Hub) ?? DeferredChoice();
         if (beat is null) return;
 
         ShowChoice(beat);
     }
 
+    /// <summary>
+    /// 敲门 / 搜查触发的、带选项的那一拍（S3-02c）：触发那一刻对话框正要弹出来，
+    /// 面板压上去会被下一句文本盖住，于是先记在 <see cref="_deferredChoiceId"/> 上。
+    /// 这里把它取出来——人还在那一处、这一拍还没做完才给，否则当它不存在。
+    /// </summary>
+    private Beat? DeferredChoice()
+    {
+        if (_deferredChoiceId is null || _beats is null || _world is null) return null;
+
+        var beat = _beats.Table.Get(_deferredChoiceId);
+        if (beat is null
+            || !string.Equals(beat.Hub, _world.Hub, StringComparison.Ordinal)
+            || !_beats.Machine.CanTrigger(beat))
+        {
+            // 已经做完了（别的路补上的）就不必再等；人不在那一处则留着，回去时再问。
+            if (beat is null || !_beats.Machine.CanTrigger(beat)) _deferredChoiceId = null;
+            return null;
+        }
+
+        return beat;
+    }
+
     private void ShowChoice(Beat beat)
     {
+        _deferredChoiceId = null;
         _choiceBeat = beat;
         _choiceSel = 0;
         _choiceOpen = true;
@@ -2500,16 +2568,30 @@ public partial class Main : Node2D
 
         var picked = beat.Options.Length > 0 && index < beat.Options.Length ? beat.Options[index] : "继续";
 
-        var ok = _beats.Choose(beat, index);
-        CloseChoice(restoreTutorial: true);
-
-        if (!ok)
+        if (_trustBook is null || _world is null)
         {
-            GD.PushWarning($"[节拍] {beat.Id} 选不进去（多半是状态已经变了）");
+            GD.PushWarning($"[节拍] {beat.Id} 没有可落的账（信任 / 世界还没造好）");
             return;
         }
 
-        var line = $"「{picked}」——你记下了。";
+        // 效果先落、成了才记这一拍（S3-02c，顺序钉在 BeatChoiceRunner 里）：
+        // 囊满 / 钱不够时整组不落，这一拍也**不算完**，把原因留在面板底下让他清囊再来。
+        var outcome = BeatChoiceRunner.Confirm(
+            beat, index, _beats, _trustBook.State, _world.Bag, _items, ref _troops, _world.Flags);
+
+        if (!outcome.Ok)
+        {
+            GD.Print($"[效果] {beat.Id} {outcome.Reason}");
+            PaintChoice();
+            _choiceFoot.Text = outcome.Reason;
+            return;
+        }
+
+        CloseChoice(restoreTutorial: true);
+
+        // 屏幕上那一行：`杀马：谷子 ×3，民望 −5`（效果一句都没有的拍退回原来那句）。
+        var line = outcome.Line.Length > 0 ? outcome.Line : $"「{picked}」——你记下了。";
+        if (outcome.Line.Length > 0) GD.Print($"[效果] {beat.Id} {outcome.Line}");
 
         // 招兵（b07）：选哪一档就加多少兵；给粮那档还要借「施粥」动三轴（§18.5 场景 7）。
         if (_recruitTable is not null && string.Equals(beat.Id, SiegeWiring.RecruitBeat, StringComparison.Ordinal))
@@ -2562,14 +2644,28 @@ public partial class Main : Node2D
         AfterBeat(beat);
     }
 
+    /// <summary>这一拍是"敲门 / 搜查"触发的（只有这两种没有"再进一次"的机会）。</summary>
+    private static bool IsTriggeredBeat(Beat beat)
+        => string.Equals(beat.Trigger, PrologueBeats.KnockTrigger, StringComparison.Ordinal)
+        || string.Equals(beat.Trigger, PrologueBeats.SearchTrigger, StringComparison.Ordinal);
+
     private void CloseChoice(bool restoreTutorial)
     {
         if (!_choiceOpen) return;
+
+        var closed = _choiceBeat;
 
         _choiceOpen = false;
         _choiceBeat = null;
         _siegeScreen = null;
         _choice.Visible = false;
+
+        // 敲门 / 搜查触发的拍没有"再进一次这一处"的机会：Esc 之后得记着它，
+        // 等下一次面板放得下的时候（读完一页、走回这一处）再问一遍。
+        // 做完的那一拍这时已经不再是 Available，不会被重新挂上。
+        if (restoreTutorial && closed is not null && _beats is not null && IsTriggeredBeat(closed)
+            && _beats.Machine.CanTrigger(closed))
+            _deferredChoiceId = closed.Id;
 
         _hint.Visible = !_box.Visible;
         if (_view is not null) _view.UiBlocking = _helpOpen || _box.Visible || _choiceOpen || _trustOpen;
@@ -2819,6 +2915,14 @@ public partial class Main : Node2D
 
         var late = _beats.PendingKnockLate(_world.Hub);
         if (late is null) return;
+
+        // 补记的这一拍也可能带选项（b02）：同样要玩家先拿主意，不能替他做完。
+        if (BeatEffectWiring.NeedsChoice(late))
+        {
+            DeferChoice(late);
+            return;
+        }
+
         if (!_beats.Complete(late)) return;
 
         GD.Print($"[节拍] 补记 {late.Id} {late.Name} → 第 {_beats.Day} 天");
@@ -2829,13 +2933,24 @@ public partial class Main : Node2D
     /// <summary>
     /// 敲门这一下（<see cref="World.Knocked"/>）。文本在世界那层，这里只负责让玩家看见、
     /// 并把 b02 记上。读档时 World.Load 也会补敲一次，那时状态机可能还没造好，所以空判。
+    ///
+    /// 这一拍带选项（S3-02c）：不能直接算完——先弹面板，玩家确认了才 <see cref="PrologueBeats.Choose"/>。
+    /// 敲门发生在"对话框正要弹出来"之前，面板这时候推上去会被那一页盖住，所以交给 <see cref="DeferChoice"/>。
     /// </summary>
     private void OnKnocked()
     {
         SetHint(_world.LastMessage ?? "", 4f);
 
         var beat = _beats?.PendingKnock(_world.Hub);
-        if (beat is not null && _beats!.Complete(beat))
+        if (beat is null) return;
+
+        if (BeatEffectWiring.NeedsChoice(beat))
+        {
+            DeferChoice(beat);
+            return;
+        }
+
+        if (_beats!.Complete(beat))
         {
             GD.Print($"[节拍] 敲门完成 {beat.Id} {beat.Name} → 第 {_beats.Day} 天");
             UpdateChrome();
@@ -2850,11 +2965,32 @@ public partial class Main : Node2D
 
         var beat = _beats.PendingSearch(_world.Hub, pointId);
         if (beat is null) return;
+
+        // b08 这一拍也有选项：搜到仓门只是"够得着了"，砸锁 / 记账 / 放火还得他自己挑。
+        if (BeatEffectWiring.NeedsChoice(beat))
+        {
+            DeferChoice(beat);
+            return;
+        }
+
         if (!_beats.Complete(beat)) return;
 
         GD.Print($"[节拍] 搜到 {pointId} 完成 {beat.Id} {beat.Name} → 第 {_beats.Day} 天");
         UpdateChrome();
         SaveGame();
+    }
+
+    /// <summary>
+    /// 敲门 / 搜查触发的、带选项的那一拍：面板现在弹不出来（对话框正开着、教程还没走完），
+    /// 先记下来，等 <see cref="TryShowChoice"/> 能弹的时候补上。已经在等同一拍的不重复记。
+    /// </summary>
+    private void DeferChoice(Beat beat)
+    {
+        // 面板上正等着同一拍就不必再记一遍；记着也能重记，ShowChoice 会把它清掉。
+        if (BeatEffectWiring.PendingShow(beat, _choiceOpen ? _choiceBeat : null) is null) return;
+
+        _deferredChoiceId = beat.Id;
+        TryShowChoice();
     }
 
     /// <summary>
@@ -2867,6 +3003,14 @@ public partial class Main : Node2D
 
         var beat = _beats.PendingSearchFallback(_world.Hub);
         if (beat is null) return false;
+
+        // 这一拍要是带选项，按 E 只把它"够着了"——选项还得他自己挑，确认了才算完。
+        if (BeatEffectWiring.NeedsChoice(beat))
+        {
+            DeferChoice(beat);
+            return true;
+        }
+
         if (!_beats.Complete(beat)) return false;
 
         SetHint($"{beat.Name}　——　记下了。", 3f);
@@ -2902,6 +3046,10 @@ public partial class Main : Node2D
         // --transition 自造十二拍与两条承诺走完四页，走完就退；同样不碰玩家那份档。
         _transitionRun = args.Contains("--transition");
         if (_transitionRun) _saveBlocked = true;
+
+        // --effects 只结算自己造的那份三轴 / 囊 / 兵，玩家的档一个字都不改（S3-02c）。
+        _effectsRun = args.Contains("--effects");
+        if (_effectsRun) _saveBlocked = true;
     }
 
     /// <summary>
@@ -4673,8 +4821,8 @@ public partial class Main : Node2D
         return beat.Trigger switch
         {
             PrologueBeats.ChoiceTrigger => PlayChoiceBeat(beat, pick),
-            PrologueBeats.KnockTrigger => PlayKnockBeat(beat),
-            PrologueBeats.SearchTrigger => PlaySearchBeat(beat),
+            PrologueBeats.KnockTrigger => PlayKnockBeat(beat, pick),
+            PrologueBeats.SearchTrigger => PlaySearchBeat(beat, pick),
             _ => $"不认识的触发方式「{beat.Trigger}」",
         };
     }
@@ -4705,27 +4853,64 @@ public partial class Main : Node2D
         if (!string.Equals(_choiceBeat.Id, beat.Id, StringComparison.Ordinal))
             return $"弹出的是 {_choiceBeat.Id}，不是 {beat.Id}";
 
-        _choiceSel = PrologueBeats.NormalizePick(beat, pick);
+        return PlayPick(beat, pick);
+    }
 
-        // 攻城那一拍：票面默认第 0 项「围」，可城里没断粮时它点不动。
-        // 跑批要证明"这条路走得完"，那就退到第一种能用的法子（通常是「攻」）。
-        if (_siegeScreen is not null && !_siegeScreen.CanUse(_choiceSel))
+    /// <summary>
+    /// 面板正在等这一拍时确认它。返回 null = 没面板或确认成功；返回一句话 = 没成。
+    ///
+    /// 搜查 / 敲门那两拍本来不经过这里，可它们现在也可能带选项（b02、b08），
+    /// 按完 E 之后面板就等在那儿——跑批得替玩家按下去，不然这一拍永远不算完。
+    /// </summary>
+    private string? ConfirmIfWaiting(Beat beat, int pick)
+    {
+        if (!_choiceOpen || _choiceBeat is null) return null;
+        if (!string.Equals(_choiceBeat.Id, beat.Id, StringComparison.Ordinal)) return null;
+
+        return PlayPick(beat, pick);
+    }
+
+    /// <summary>
+    /// 在面板上确认这一拍：先试 <paramref name="pick"/>，效果落不下（钱不够、囊满）就换下一项。
+    ///
+    /// 跑批要证明"这条路走得完"。真玩家遇到装不下会自己清囊再来，脚本没有这个本事，
+    /// 只能照着候选顺序找一条落得下的——和攻城"第 0 法点不动就退到第一种能用的"同一个道理。
+    /// </summary>
+    private string? PlayPick(Beat beat, int pick)
+    {
+        var count = Math.Max(1, beat.Options.Length);
+
+        for (var attempt = 0; attempt < count; attempt++)
         {
-            var usable = _siegeScreen.FirstUsable();
-            GD.Print($"[通关] {beat.Id} 第 {_choiceSel + 1} 法用不上，改走第 {usable + 1} 法");
-            _choiceSel = usable;
+            var index = PrologueBeats.NormalizePick(beat, (Math.Max(0, pick) + attempt) % count);
+
+            if (attempt > 0)
+                GD.Print($"[通关] {beat.Id} 第 {(Math.Max(0, pick) + attempt - 1) % count + 1} 项没落成，改走第 {index + 1} 项");
+
+            _choiceSel = index;
+
+            // 攻城那一拍：票面默认第 0 项「围」，可城里没断粮时它点不动。
+            // 跑批要证明"这条路走得完"，那就退到第一种能用的法子（通常是「攻」）。
+            if (_siegeScreen is not null && !_siegeScreen.CanUse(index))
+            {
+                var usable = _siegeScreen.FirstUsable();
+                GD.Print($"[通关] {beat.Id} 第 {index + 1} 法用不上，改走第 {usable + 1} 法");
+                _choiceSel = usable;
+            }
+
+            ConfirmChoice();
+
+            if (_beats!.Machine.IsDone(beat)) return null;
         }
 
-        ConfirmChoice();
-
-        return _beats!.Machine.IsDone(beat) ? null : "确认之后这一拍没记上";
+        return $"确认之后这一拍没记上（{beat.Id} 每一项都没落成）";
     }
 
     /// <summary>
     /// 搜查型节拍：把人挪到点位旁边，按一次 E（<see cref="MapView.PressInteract"/> →
-    /// World.Search → Main.OnSearched），读完再按一次 E 关掉。
+    /// World.Search → Main.OnSearched），读完再按一次 E 关掉；这一拍带选项就替玩家确认。
     /// </summary>
-    private string? PlaySearchBeat(Beat beat)
+    private string? PlaySearchBeat(Beat beat, int pick)
     {
         var pointId = PrologueBeats.SearchPointOf(beat.Id);
         if (pointId is null) return "这一拍没有指定点位";
@@ -4738,18 +4923,30 @@ public partial class Main : Node2D
         _view!.PressInteract();
         CloseIfOpen();
 
+        var confirm = ConfirmIfWaiting(beat, pick);
+        if (confirm is not null) return confirm;
+
         return _beats!.Machine.IsDone(beat) ? null : $"按了 E，{beat.Id} 没记上";
     }
 
     /// <summary>
     /// 敲门型节拍：不碰 KnockTimer，靠真实的刻消耗等它自己到点——
-    /// 每翻一件东西记 1 刻，<see cref="World.CheckKnock"/> 到线就敲，Knocked 事件把这一拍记上。
+    /// 每翻一件东西记 1 刻，<see cref="World.CheckKnock"/> 到线就敲，Knocked 事件把这一拍交出来。
+    /// 敲完门这一拍可能带选项（b02）：面板弹出来之后照样替玩家按下确认。
     /// </summary>
-    private string? PlayKnockBeat(Beat beat)
+    private string? PlayKnockBeat(Beat beat, int pick)
     {
         for (var guard = 0; !_beats!.Machine.IsDone(beat); guard++)
         {
             if (guard > 16) return $"翻到 {_world.KeUsed}/{_world.KeBudget} 刻，门还没响";
+
+            // 门响过了，这一拍在面板上等着：这一轮就把选项答掉。
+            if (_choiceOpen && BeatEffectWiring.SameBeat(_choiceBeat, beat))
+            {
+                var confirm = PlayPick(beat, pick);
+                if (confirm is not null) return confirm;
+                continue;
+            }
 
             Interactable? target = null;
             foreach (var p in _world.Props)
@@ -4764,6 +4961,8 @@ public partial class Main : Node2D
 
             _view!.PressInteract();
             CloseIfOpen();
+
+            // CloseIfOpen 关掉对话框时会把等着的那一拍推上来（TryShowChoice），下一轮接上。
         }
 
         return null;

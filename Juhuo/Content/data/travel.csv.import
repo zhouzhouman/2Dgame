@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://3c7axjsipklf"
+
+[deps]
+
+files=["res://Content/data/travel.to.translation", "res://Content/data/travel.ke.translation", "res://Content/data/travel.note.translation"]
+
+source_file="res://Content/data/travel.csv"
+dest_files=["res://Content/data/travel.to.translation", "res://Content/data/travel.ke.translation", "res://Content/data/travel.note.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true
