@@ -25,8 +25,9 @@ namespace Juhuo;
 ///   Esc            关掉对话；什么都没开时打开操作说明
 ///   H              操作说明
 ///
-/// 新手引导不弹"点下一步"的窗：按玩家真的做了什么推进（走出去 → 按 Ctrl → 翻东西 → 走到门口）。
-/// 每一步都是他自己做的，所以不打断。
+/// 新手引导不弹"点下一步"的窗：按玩家真的做了什么推进
+/// （走出去 → 按 Ctrl → 翻东西 → 开地图 → 开囊 → 看三轴 → 说话 → 走到门口）。
+/// 每一步都是他自己做的，所以不打断；八步没走完，不许出城。
 /// </summary>
 public partial class Main : Node2D
 {
@@ -237,6 +238,12 @@ public partial class Main : Node2D
     /// <summary>转段结算器；表读不进来时为 null。</summary>
     private TransitionBook? _transitionBook;
 
+    /// <summary>六位功臣（companions.csv）；读不进来时为 null，分封页整页跳过。</summary>
+    private CompanionTable? _companionTable;
+
+    /// <summary>分封账本：一人只封一次，每次开转段新起一本。</summary>
+    private EnfeoffBook? _enfeoffBook;
+
     /// <summary>转段面板；没开时为 null。</summary>
     private TransitionScreen? _transitionScreen;
 
@@ -250,13 +257,16 @@ public partial class Main : Node2D
     private Label _transitionHead = default!;
     private Label _transitionFlash = default!;
 
-    /// <summary>四页共用的一组行：定都七行、报告十一行（多一行"带走"），按最长的那一页备。</summary>
-    private readonly Label[] _transitionRows = new Label[11];
+    /// <summary>五页共用的一组行：定都七行、报告十三行（含"带走"与分封两行），按最长的那一页备。</summary>
+    private readonly Label[] _transitionRows = new Label[13];
     private Label _transitionFoot = default!;
     private bool _transitionOpen;
 
     /// <summary>这一局是 <c>--transition</c> 自检（同样不碰玩家那份档）。</summary>
     private bool _transitionRun;
+
+    /// <summary>这一局是 <c>--enfeoff</c> 自检：只算六个人的封赏账，打印四行就退。</summary>
+    private bool _enfeoffRun;
 
     /// <summary>这一局是 <c>--effects</c> 自检：三条真实选项各结算一次，打印然后退出（S3-02c）。</summary>
     private bool _effectsRun;
@@ -402,7 +412,11 @@ public partial class Main : Node2D
 
         // 跑批不学走路：脚本自己会走位。教程没标完成的话，
         // TryShowChoice 会一直让路，通关脚本就一拍都答不了（门禁当场红过一次）。
-        if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun || _effectsRun) _tut.Finish();
+        // S4-01c 之后多一条：八步没走完不许出城，所以"会按出口的跑批"也得先把教学记完——
+        // 否则 --chain 这种一进来就 OnExit 八次的自检会被出口自己挡住（七关串联当场红）。
+        if (_playthrough || _bagRun || _shopRun || _siegeRun || _transitionRun || _effectsRun
+            || _enfeoffRun || _args.Contains("--chain") || _args.Contains("--walk") || _args.Contains("--demo"))
+            _tut.Finish();
 
         BuildUi();
 
@@ -476,6 +490,10 @@ public partial class Main : Node2D
             _oathTable = OathTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/oaths.csv"));
             _realmTable = RealmTable.FromCsv(FileAccess.GetFileAsString("res://Content/data/realms.csv"));
 
+            // 分封六功臣（S4-01d）：表是数据，账在 Core，这一页在 Application
+            _companionTable = CompanionTable.FromCsv(
+                FileAccess.GetFileAsString("res://Content/data/companions.csv"));
+
             // 开场白与立绘（S3-01d）：两张表都只读一次；读不进来只是不放开场 / 不挂立绘，
             // 不能让整局死在这里——别的表都用 FromCsv 直抛，这两张是"锦上添花"，退一步更好。
             _introTable = TryLoadIntroTable();
@@ -491,9 +509,18 @@ public partial class Main : Node2D
             // 通关跑批与 --bag 从干净的一局起跑，旧档一律不认：不然跑出来的是玩家的进度。
             if (_playthrough) GD.Print("[通关] 不读存档，从第 1 天、0 拍开始");
             else if (_bagRun) GD.Print("[囊] 不读存档，从空囊开始");
+            // --tutrun 也从干净的一局起跑：教程是"第一次玩"的那一课，读一份已经教过的档，
+            // 八步一步都不会走，门禁就成了空转（一开始就是这样，S4-01c 顺手补上）。
+            // 进度里"看过一次"的标记在这里不算数：这条自检要看的就是第一次那八步推不推得动。
+            else if (_args.Contains("--tutrun"))
+            {
+                GD.Print("[引导] 不读存档，从第一步开始走一遍");
+                _tut.Reset();
+            }
             // 新档（_newGame）绝不读档：菜单那条路会先把旧档改名，但调试入口没改名，
             // 少了这一条就会把旧档读进来，于是"开局 30 文"永远发不出去（实测踩过）。
             else if (!_shopRun && !_siegeRun && !_transitionRun && !_effectsRun && !_newGame
+                     && !_enfeoffRun && !_args.Contains("--shotenfeoff")
                      && !WantsMapDemo(_args) && !WantsIntroDemo(_args)) LoadSave();
 
             // 新档的开局资金（S3-01c）：钱数只有 StartKit 一份，这里只负责把它放进囊里。
@@ -533,8 +560,10 @@ public partial class Main : Node2D
             // 读进来的档若已经置了 prologue.done，IsDone 为真，后面不会再弹。
             _transitionState = _loadedState ?? new SaveState();
             _transitionBook = new TransitionBook(_oathTable, _realmTable, _world.Flags, _transitionState);
+            _enfeoffBook = new EnfeoffBook();
             GD.Print($"[转段·表] 誓约 {_oathTable.Count} 条、国号 {_realmTable.Count} 个"
-                     + $"，这一档{(_transitionBook.IsDone ? "已" : "未")}转段");
+                     + $"，这一档{(_transitionBook.IsDone ? "已" : "未")}转段"
+                     + $"；功臣 {_companionTable.Count} 位，这一档分封 {EnfeoffRecord.Count(_transitionState)}/6");
 
             foreach (var a in OS.GetCmdlineUserArgs())
                 if (a.StartsWith("--hub=", StringComparison.Ordinal))
@@ -806,6 +835,22 @@ public partial class Main : Node2D
             _quitAfterFrame = true;
         }
 
+        // 开发辅助：--enfeoff 六个人各封哪一档、默认薄封的账、裴无咎改厚封、报告行（S4-01d）
+        if (_enfeoffRun)
+        {
+            if (_companionTable is not null)
+            {
+                foreach (var line in EnfeoffDemo.Lines(_companionTable)) GD.Print(line);
+            }
+            else
+            {
+                GD.Print($"{EnfeoffDemo.Prefix} 初始化没完成（companions.csv 读不进来），跑不了");
+                _exitCode = 1;
+            }
+
+            _quitAfterFrame = true;
+        }
+
         if (OS.GetCmdlineUserArgs().Contains("--demo") && _world is not null)
             RunDemo();
 
@@ -911,7 +956,8 @@ public partial class Main : Node2D
         // 先把手上的选项收起来，免得截到两层面板叠在一起。
         var shotWanted = args.Contains("--shotbag") || args.Contains("--shottut")
                          || args.Contains("--shotmap") || args.Contains("--shot")
-                         || args.Contains("--shotshop") || args.Contains("--shottrust");
+                         || args.Contains("--shotshop") || args.Contains("--shottrust")
+                         || args.Contains("--shotenfeoff");
 
         // 截图截的是**游戏本身**；开场那九行另有 --shotintro。新档（--newgame）一进来就开场，
         // 不收掉的话 --newgame --shotmap 截到的是九行字压在地图上面。
@@ -947,6 +993,13 @@ public partial class Main : Node2D
             // 截图里就会出「囊中铜钱 40」配「囊 0/12」这种自相矛盾（实测踩过）。
             UpdateChrome();
             OpenShop(ShopTable.Official);
+            _ = CaptureAndQuitAsync();
+        }
+        else if (args.Contains("--shotenfeoff"))
+        {
+            // 只为截图（S4-01d）：真的转段界面停在分封页，不碰玩家那份档。
+            CloseChoice(restoreTutorial: false);
+            OpenEnfeoffShot();
             _ = CaptureAndQuitAsync();
         }
         else if (args.Contains("--shotmap"))
@@ -1608,9 +1661,9 @@ public partial class Main : Node2D
 
         if (_beatLine is not null)
         {
-            // 转段四页开着时，别让 HUD 提前写「序章已完成」——那四个字要留在收尾页。
+            // 转段五页开着时，别让 HUD 提前写「序章已完成」——那四个字要留在收尾页。
             var line = _transitionOpen && _beats is not null
-                ? $"第 {_beats.Day} 天 · 转段：定都 → 国号 → 国策 → 国情报告"
+                ? $"第 {_beats.Day} 天 · 转段：定都 → 国号 → 国策 → 分封 → 国情报告"
                 : _beats is null ? "" : _beats.HudLine(ShortHub(_world.Hub));
 
             // 囊跟在节拍后面。快满了才变色——一直刺眼等于没提示。
@@ -1634,16 +1687,17 @@ public partial class Main : Node2D
     {
         if (_goalLine is null || _goals is null) return;
 
-        var line = GoalHud.Line(
+        var text = GoalHud.Text(
             _goals,
             _beats?.Current,
             _beats?.AllDone ?? false,
             _transitionBook?.IsDone ?? false);
 
+        var line = GoalHud.Prefix + text;
         if (string.Equals(_goalLine.Text, line, StringComparison.Ordinal)) return;
 
         _goalLine.Text = line;
-        GD.Print($"[目标] {line}");
+        GD.Print($"[目标] {text}");
     }
 
     // ————————————————————————— 囊 —————————————————————————
@@ -2480,7 +2534,7 @@ public partial class Main : Node2D
         // 柜台也压在上面：这时候推一张决断上来，键盘会被两层抢。
         if (_shopOpen) return;
 
-        // 教程五步是第一课：它没走完就别推决断上来，两个框叠着玩家不知道该看谁。
+        // 教学八步是第一课：它没走完就别推决断上来，两个框叠着玩家不知道该看谁。
         // （玩家报的「没有新手教程」就是这个：新档一进场，b01 焚账先弹出来把教程压住了。）
         if (!_tut.Done) return;
 
@@ -2831,7 +2885,7 @@ public partial class Main : Node2D
     /// </summary>
     private void MaybeResumeTransition()
     {
-        if (_transitionRun || _playthrough || _bagRun || _shopRun || _siegeRun) return;
+        if (_transitionRun || _playthrough || _bagRun || _shopRun || _siegeRun || _enfeoffRun) return;
         if (_transitionBook is null || _transitionBook.IsDone) return;
         if (_beats is null || !_beats.AllDone) return;
 
@@ -2848,7 +2902,13 @@ public partial class Main : Node2D
         // prologue.beats_done，不是运行中的状态机。不同步，Finish 会永远说"还差 12 拍"。
         _beats?.Machine.ToState(_transitionState);
 
-        _transitionScreen = new TransitionScreen(_transitionBook, _realmTable, _transitionState);
+        // 每次开转段新起一本账：谁是"已经封过"以存档里的 enfeoffs 为准，
+        // 不能指望上一局留下的 HashSet（OpenTransition 可能被开第二次）。
+        _enfeoffBook = new EnfeoffBook();
+
+        _transitionScreen = new TransitionScreen(
+            _transitionBook, _realmTable, _transitionState,
+            _companionTable, _enfeoffBook, _trustBook?.State, _world?.Flags);
         _transitionOpen = true;
 
         if (_choiceOpen) CloseChoice(restoreTutorial: false);
@@ -2861,7 +2921,31 @@ public partial class Main : Node2D
 
         UpdateChrome();
         PaintTransition();
-        GD.Print($"[转段] 打开四页：许过 {_transitionScreen.Made.Count} 条承诺");
+        GD.Print($"[转段] 打开转段：许过 {_transitionScreen.Made.Count} 条承诺"
+                 + $"，{(_transitionScreen.NeedsEnfeoff ? "要分封" : "不用分封")}");
+    }
+
+    /// <summary>
+    /// 只为截图（S4-01d）：把真的转段界面拨到分封页，光标停在裴无咎、已改成厚封。
+    /// 走的是 <see cref="EnfeoffDemo.OpenScreen"/>，造的是自己的一份存档，绝不碰玩家那份。
+    /// </summary>
+    private void OpenEnfeoffShot()
+    {
+        if (_companionTable is null || _oathTable is null || _realmTable is null) return;
+
+        var (screen, state) = EnfeoffDemo.OpenScreen(_companionTable, _oathTable, _realmTable);
+        _transitionState = state;
+        _transitionScreen = screen;
+        _transitionOpen = true;
+
+        _transition.Visible = true;
+        _tutPanel.Visible = false;
+        _hint.Visible = false;
+        if (_view is not null) _view.UiBlocking = true;
+
+        UpdateChrome();
+        PaintTransition();
+        GD.Print($"[分封] 截图：{screen.Head}，光标 {screen.Selected}，档位 {screen.GradeAtCursor}");
     }
 
     /// <summary>收尾页按 Esc：退出转段，回到游戏里。之后 HUD 会写「序章已完成」。</summary>
@@ -2898,7 +2982,7 @@ public partial class Main : Node2D
     }
 
     /// <summary>
-    /// 报告页的十一行：前四行照刚选的，中间五行是文档原句，
+    /// 报告页的十三行：前四行照刚选的，分封那两行（有分封才有），中间五行是文档原句，
     /// 再一行"带走"（转段这一刻囊里真有的东西），最后一行是实数。
     /// </summary>
     private IReadOnlyList<TransitionRow> ReportRows(TransitionScreen screen)
@@ -2930,6 +3014,7 @@ public partial class Main : Node2D
             TransitionPage.Capital => screen.CapitalRows(),
             TransitionPage.Realm => screen.RealmRows(),
             TransitionPage.Oaths => screen.OathRows(),
+            TransitionPage.Enfeoff => screen.EnfeoffRows(),
             TransitionPage.Report => ReportRows(screen),
             _ => Array.Empty<TransitionRow>(),
         };
@@ -3008,6 +3093,17 @@ public partial class Main : Node2D
                 };
                 break;
 
+            case TransitionPage.Enfeoff:
+                switch (key)
+                {
+                    case Key.Up or Key.W: screen.MoveEnfeoffCursor(-1); break;
+                    case Key.Down or Key.S: screen.MoveEnfeoffCursor(1); break;
+                    case Key.Left or Key.A: screen.CycleGrade(-1); break;
+                    case Key.Right or Key.D: screen.CycleGrade(1); break;
+                }
+
+                break;
+
             case TransitionPage.Oaths:
                 switch (key)
                 {
@@ -3028,7 +3124,8 @@ public partial class Main : Node2D
         {
             SaveGame();
             GD.Print($"[转段] 落盘：都城 {_transitionState.Prologue.Capital}｜国号 {_transitionState.Prologue.Realm}"
-                     + $"｜国策 {_transitionState.Prologue.Oaths.Count} 条｜未决 {_transitionState.Prologue.Debts.Count} 条");
+                     + $"｜国策 {_transitionState.Prologue.Oaths.Count} 条｜未决 {_transitionState.Prologue.Debts.Count} 条"
+                     + $"｜分封 {EnfeoffRecord.Count(_transitionState)}/6");
         }
 
         PaintTransition();
@@ -3196,6 +3293,10 @@ public partial class Main : Node2D
         // --transition 自造十二拍与两条承诺走完四页，走完就退；同样不碰玩家那份档。
         _transitionRun = args.Contains("--transition");
         if (_transitionRun) _saveBlocked = true;
+
+        // --enfeoff 只算六个人的封赏账（四行），不碰玩家那份档。
+        _enfeoffRun = args.Contains("--enfeoff");
+        if (_enfeoffRun) _saveBlocked = true;
 
         // --effects 只结算自己造的那份三轴 / 囊 / 兵，玩家的档一个字都不改（S3-02c）。
         _effectsRun = args.Contains("--effects");
@@ -3815,6 +3916,10 @@ public partial class Main : Node2D
         state.Prologue.Realm = prologue.Realm;
         state.Prologue.Oaths = new List<string>(prologue.Oaths ?? new List<string>());
         state.Prologue.Debts = new List<string>(prologue.Debts ?? new List<string>());
+
+        // 分封六样（schema v6）：一人一档，重开转段时靠它跳过已经封过的那一页。
+        state.Prologue.Enfeoffs = new Dictionary<string, string>(
+            prologue.Enfeoffs ?? new Dictionary<string, string>(), StringComparer.Ordinal);
 
         // 三条轴写回现有的 Trust["prologue"]：形状不变、不加字段。
         if (_trustBook is not null) TrustWiring.Store(state, _trustBook);
@@ -4775,17 +4880,17 @@ public partial class Main : Node2D
     }
 
     /// <summary>
-    /// 转段四页的面板（S2-05c）：定都、国号、国策、国情报告，最后一页是「序章完成」。
+    /// 转段五页的面板（S2-05c / S4-01d）：定都、国号、国策、分封、国情报告，最后一页是「序章完成」。
     ///
-    /// 四页共用一组行：定都七行、报告十行，按最长的那一页备十行；每页只点亮自己用得上的。
-    /// 页面内容全由 <see cref="TransitionScreen"/> 算，这里只负责画和递按键。
+    /// 五页共用一组行：定都七行、报告十三行（含"带走"与分封两行），按最长的那一页备十三行；
+    /// 每页只点亮自己用得上的。页面内容全由 <see cref="TransitionScreen"/> 算，这里只负责画和递按键。
     /// </summary>
     private void BuildTransition(CanvasLayer ui)
     {
         _transition = new Panel
         {
-            Position = new Vector2(60, 62),
-            Size = new Vector2(520, 340),
+            Position = new Vector2(20, 62),
+            Size = new Vector2(600, 340),
             Visible = false,
         };
         _transition.AddThemeStyleboxOverride("panel", new StyleBoxFlat
@@ -4806,7 +4911,7 @@ public partial class Main : Node2D
         _transitionHead = new Label
         {
             Position = new Vector2(18, 12),
-            Size = new Vector2(480, 22),
+            Size = new Vector2(560, 22),
             VerticalAlignment = VerticalAlignment.Center,
         };
         Style(_transitionHead, 15, new Color(0.96f, 0.90f, 0.72f, 0.98f));
@@ -4815,7 +4920,7 @@ public partial class Main : Node2D
         _transitionFlash = new Label
         {
             Position = new Vector2(18, 44),
-            Size = new Vector2(480, 16),
+            Size = new Vector2(560, 16),
             VerticalAlignment = VerticalAlignment.Center,
         };
         Style(_transitionFlash, 10, new Color(0.90f, 0.68f, 0.36f, 0.96f));
@@ -4825,8 +4930,9 @@ public partial class Main : Node2D
         {
             var row = new Label
             {
-                Position = new Vector2(18, 70 + i * 20),
-                Size = new Vector2(484, 20),
+                // 十三行（报告页最长）压进 340 的面板：行距 18，最后一行落在 286。
+                Position = new Vector2(18, 70 + i * 18),
+                Size = new Vector2(564, 18),
                 Text = "",
                 Visible = false,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -4839,7 +4945,7 @@ public partial class Main : Node2D
         _transitionFoot = new Label
         {
             Position = new Vector2(18, 310),
-            Size = new Vector2(484, 18),
+            Size = new Vector2(564, 18),
             VerticalAlignment = VerticalAlignment.Center,
         };
         Style(_transitionFoot, 9, new Color(0.60f, 0.56f, 0.46f, 0.90f));

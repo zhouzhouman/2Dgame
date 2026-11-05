@@ -26,10 +26,22 @@ public static class GoalHud
     /// <returns>带前缀的一行字，不会是空串。</returns>
     /// <exception cref="ArgumentNullException"><paramref name="goals"/> 为 null。</exception>
     public static string Line(GoalTable goals, Beat? pending, bool beatsDone, bool turnedRealm)
+        => Prefix + Text(goals, pending, beatsDone, turnedRealm);
+
+    /// <summary>
+    /// 不带前缀的那一句（日志与卡片正文用）。挑哪一句的规矩照旧在 <see cref="GoalTable.Current"/>。
+    /// </summary>
+    /// <param name="goals">目标表（goals.csv）。</param>
+    /// <param name="pending">正等着的那一拍；没有传 null。</param>
+    /// <param name="beatsDone">十二拍走完了没有。</param>
+    /// <param name="turnedRealm">转段了没有。</param>
+    /// <returns>一句话，不会是空串。</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="goals"/> 为 null。</exception>
+    public static string Text(GoalTable goals, Beat? pending, bool beatsDone, bool turnedRealm)
     {
         if (goals == null) throw new ArgumentNullException(nameof(goals));
 
-        return Prefix + goals.Current(pending, beatsDone, turnedRealm);
+        return goals.Current(pending, beatsDone, turnedRealm);
     }
 }
 

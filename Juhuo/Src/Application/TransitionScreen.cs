@@ -6,10 +6,12 @@ using Juhuo.Core;
 namespace Juhuo.Application;
 
 /// <summary>
-/// 转段四页（票号 S2-05c）：定都、国号、国策、国情报告。后头再挂一页「序章完成」。
+/// 转段五页（票号 S2-05c / S4-01d）：定都、国号、国策、分封、国情报告。
+/// 后头再挂一页「序章完成」。
 ///
-/// 规则仍在 <see cref="TransitionBook"/> 里；这一层只管"玩家翻到第几页、选中哪一行、
-/// 按下去之后存档里多了什么"，以及报告页上那十行字。纯 C#，不认引擎。
+/// 规则仍在 <see cref="TransitionBook"/> 与 <see cref="EnfeoffBook"/> 里；这一层只管
+/// "玩家翻到第几页、选中哪一行、按下去之后存档里多了什么"，以及报告页上那些字。
+/// 纯 C#，不认引擎。
 /// </summary>
 public enum TransitionPage
 {
@@ -22,7 +24,10 @@ public enum TransitionPage
     /// <summary>第三页：国策（一条承诺都没许过时整页跳过）。</summary>
     Oaths,
 
-    /// <summary>第四页：第一份国情报告。</summary>
+    /// <summary>第四页：分封六位功臣（已经封过的档整页跳过）。</summary>
+    Enfeoff,
+
+    /// <summary>第五页：第一份国情报告。</summary>
     Report,
 
     /// <summary>收尾页：序章完成。</summary>
@@ -49,6 +54,20 @@ public readonly record struct ReportFacts(
     int Troops, int Guan, int Min, int Yi, int BagUsed, int BagCapacity, int Day);
 
 /// <summary>
+/// 报告页「分封」那一行的一小段：<c>沈砚 薄封（忠 62→68）</c>。
+/// 只记封完那一刻的实数——忠不是现在的忠，是**当时**的忠。
+/// </summary>
+/// <param name="Name">功臣名。</param>
+/// <param name="Grade">档位的中文名（厚封 / 薄封 / 不封）。</param>
+/// <param name="Before">封之前的忠诚。</param>
+/// <param name="After">封之后的忠诚。</param>
+public readonly record struct EnfeoffPart(string Name, string Grade, int Before, int After)
+{
+    /// <summary>这一段的字：<c>阿禾 薄封（忠 78→84）</c>。</summary>
+    public string Text => $"{Name} {Grade}（忠 {Before}→{After}）";
+}
+
+/// <summary>
 /// 转段界面上的固定字（票号 S2-05c）。**报告页下面五行直接抄设计文档 §16.6 第 5 步，不改写。**
 /// </summary>
 public static class TransitionText
@@ -66,7 +85,10 @@ public static class TransitionText
     public const string OathsHead = "三　国策";
 
     /// <summary>第四页抬头。</summary>
-    public const string ReportHead = "四　国情报告";
+    public const string EnfeoffHead = "四　分封";
+
+    /// <summary>第五页抬头。</summary>
+    public const string ReportHead = "五　国情报告";
 
     /// <summary>收尾页那四个字。</summary>
     public const string DoneHead = "序章完成";
@@ -85,6 +107,9 @@ public static class TransitionText
 
     /// <summary>国策页的底注。</summary>
     public const string OathsFoot = "↑↓ 选　·　空格 立 / 不立　·　Enter 定下";
+
+    /// <summary>分封页的底注。</summary>
+    public const string EnfeoffFoot = "↑↓ 选人　·　←→ 改封赏　·　Enter 定下";
 
     /// <summary>报告页的底注。</summary>
     public const string ReportFoot = "Enter 收下这份报告";
@@ -179,6 +204,110 @@ public static class TransitionText
             ? $"{index + 1}　{realm.Label}"
             : $"{index + 1}　{realm.Label} · {realm.Motto}";
     }
+
+    // ————————————————————————— 分封（S4-01d） —————————————————————————
+
+    /// <summary>
+    /// 分封页的一行：<c>沈砚　御史大夫　忠 62 野心 55　［薄封］</c>。
+    /// 官、忠、野心都照表念；档位读的是玩家当下改到的那一档。
+    /// </summary>
+    /// <param name="companion">这位功臣。</param>
+    /// <param name="grade">当前档位。</param>
+    /// <returns>一行字。</returns>
+    public static string EnfeoffRow(Companion companion, Enfeoff grade)
+    {
+        if (companion == null) throw new ArgumentNullException(nameof(companion));
+
+        return $"{companion.Name}　{companion.Office}　忠 {companion.Loyalty} 野心 {companion.Ambition}"
+               + $"　［{EnfeoffBook.Label(grade)}］";
+    }
+
+    /// <summary>报告页那一行的宽度上限（按全角字宽算；面板一行放得下这么多）。</summary>
+    public const int ReportLineMaxWidth = 45;
+
+    /// <summary>
+    /// 报告页的「分封」行：<c>分封　阿禾 薄封（忠 78→84）· 沈砚 薄封（忠 62→68）· …</c>。
+    ///
+    /// 六个都列在这一行里放不下，按面板宽度截到第几个人，后面缀一个「…」——
+    /// 玩家上一页刚亲手定过六个，这里要的是"记下了"，不是再抄一遍。
+    /// </summary>
+    /// <param name="parts">按封赏顺序排好的六段；空表返回空串（这一趟没封过）。</param>
+    /// <returns>一行字。</returns>
+    public static string EnfeoffReportLine(IReadOnlyList<EnfeoffPart>? parts)
+    {
+        if (parts == null || parts.Count == 0) return "";
+
+        var text = new System.Text.StringBuilder("分封　");
+        var width = 3.0;
+        var shown = 0;
+
+        for (var i = 0; i < parts.Count; i++)
+        {
+            var chunk = (i == 0 ? "" : "· ") + parts[i].Text;
+            var w = WidthOf(chunk);
+            if (shown > 0 && width + w > ReportLineMaxWidth) break;
+
+            text.Append(chunk);
+            width += w;
+            shown++;
+        }
+
+        if (shown < parts.Count) text.Append("· …");
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// 报告页的提醒行：把几句提醒并成一行。放不下就截断。
+    /// </summary>
+    /// <param name="notes">每句提醒（一个人一句）。</param>
+    /// <returns>一行字；一句都没有返回空串。</returns>
+    public static string EnfeoffNoticeLine(IReadOnlyList<string>? notes)
+    {
+        if (notes == null || notes.Count == 0) return "";
+
+        var text = new System.Text.StringBuilder();
+        var width = 0.0;
+        var shown = 0;
+
+        for (var i = 0; i < notes.Count; i++)
+        {
+            var chunk = (i == 0 ? "" : "　") + notes[i];
+            var w = WidthOf(chunk);
+            if (shown > 0 && width + w > ReportLineMaxWidth) break;
+
+            text.Append(chunk);
+            width += w;
+            shown++;
+        }
+
+        if (shown < notes.Count) text.Append("…");
+        return text.ToString();
+    }
+
+    /// <summary>薄封的野心家：他心里记着。</summary>
+    /// <param name="name">功臣名。</param>
+    /// <param name="grade">档位中文名。</param>
+    /// <returns>一句提醒。</returns>
+    public static string EnfeoffWorry(string name, string grade) => $"{name} {grade}——他心里记着。";
+
+    /// <summary>厚封的野心家：他迟早要更多。</summary>
+    /// <param name="name">功臣名。</param>
+    /// <param name="grade">档位中文名。</param>
+    /// <returns>一句提醒。</returns>
+    public static string EnfeoffAmbition(string name, string grade) => $"{name} {grade}——他迟早要更多。";
+
+    /// <summary>没封的人：当晚就走了。</summary>
+    /// <param name="name">功臣名。</param>
+    /// <returns>一句提醒。</returns>
+    public static string EnfeoffGone(string name) => $"{name} 走了——他没等到天亮。";
+
+    /// <summary>一段字的宽度：全角算 1，半角（数字、空格、箭头）算 0.55。</summary>
+    private static double WidthOf(string text)
+    {
+        var width = 0.0;
+        foreach (var ch in text) width += ch <= 0x7E ? 0.55 : 1.0;
+        return width;
+    }
 }
 
 /// <summary>
@@ -203,19 +332,29 @@ public static class TransitionTrigger
 }
 
 /// <summary>
-/// 转段四页的界面状态（票号 S2-05c）：翻到第几页、光标在哪、哪几条立了。
+/// 转段五页的界面状态（票号 S2-05c / S4-01d）：翻到第几页、光标在哪、哪几条立了、六个人各封哪一档。
 ///
-/// **不可逆**：四页之内 <see cref="CanClose"/> 恒为 false，Esc 不退；落定之后才放人走。
-/// 每一次真的落定都调用 <see cref="TransitionBook"/>，存档里的 <c>prologue</c> 当场变——
-/// 这里不另记一份"玩家选了什么"，免得两份真相对不上。
+/// **不可逆**：五页之内 <see cref="CanClose"/> 恒为 false，Esc 不退；落定之后才放人走。
+/// 每一次真的落定都调用 <see cref="TransitionBook"/> / <see cref="EnfeoffBook"/>，
+/// 存档里的 <c>prologue</c> 当场变——这里不另记一份"玩家选了什么"，免得两份真相对不上。
+///
+/// 分封那一页要三样东西才活得起来：功臣表、分封账本、以及往哪写三轴与旗标。
+/// 老构造（三参数）这三样都没有，分封页整页跳过——旧的转段测试与 <c>--transition</c> 就是这么走的。
 /// </summary>
 public sealed class TransitionScreen
 {
     private readonly TransitionBook _book;
     private readonly RealmTable _realms;
     private readonly SaveState _state;
+    private readonly CompanionTable? _companions;
+    private readonly EnfeoffBook? _enfeoff;
+    private readonly TrustState? _trust;
+    private readonly FlagStore? _flags;
     private readonly List<Oath> _made = new();
     private readonly HashSet<string> _picked = new(StringComparer.Ordinal);
+    private readonly List<Enfeoff> _grades = new();
+    private readonly List<EnfeoffPart> _sealed = new();
+    private readonly List<string> _worries = new();
 
     /// <summary>
     /// 摊开转段界面。构造函数就把第一页摆好（<see cref="Open"/>），Main 拿到的永远是可画的一份。
@@ -224,10 +363,42 @@ public sealed class TransitionScreen
     /// <param name="realms">国号表。</param>
     /// <param name="state">要写进去的存档（与 <paramref name="book"/> 手上的是同一份）。</param>
     public TransitionScreen(TransitionBook book, RealmTable realms, SaveState state)
+        : this(book, realms, state, null, null, null, null)
+    {
+    }
+
+    /// <summary>
+    /// 带分封的转段界面（S4-01d）：六位功臣一人一档，Enter 时真结算并落进 <c>prologue.enfeoffs</c>。
+    /// </summary>
+    /// <param name="book">转段结算器。</param>
+    /// <param name="realms">国号表。</param>
+    /// <param name="state">要写进去的存档。</param>
+    /// <param name="companions">六位功臣；null 表示这一版不比分封（分封页跳过）。</param>
+    /// <param name="enfeoff">分封账本；与 <paramref name="companions"/> 同生同灭。</param>
+    /// <param name="trust">三轴：厚封加官望、薄封加民望、不封加疑心，就地改。</param>
+    /// <param name="flags">旗标仓库：离心 / 权臣 / 走了写这里，存档跟着它走。</param>
+    public TransitionScreen(
+        TransitionBook book,
+        RealmTable realms,
+        SaveState state,
+        CompanionTable? companions,
+        EnfeoffBook? enfeoff,
+        TrustState? trust,
+        FlagStore? flags)
     {
         _book = book ?? throw new ArgumentNullException(nameof(book));
         _realms = realms ?? throw new ArgumentNullException(nameof(realms));
         _state = state ?? throw new ArgumentNullException(nameof(state));
+
+        // 四样要么都给，要么都不给：只给一半的分封账本比没有更危险（会静默算半笔）。
+        if (companions is not null && enfeoff is not null && trust is not null && flags is not null)
+        {
+            _companions = companions;
+            _enfeoff = enfeoff;
+            _trust = trust;
+            _flags = flags;
+        }
+
         Open();
     }
 
@@ -246,8 +417,12 @@ public sealed class TransitionScreen
     /// <summary>这一趟真许过的誓约，按表里的顺序。</summary>
     public IReadOnlyList<Oath> Made => _made;
 
-    /// <summary>四页之内退不出去：只有「序章完成」那一页能按 Esc。</summary>
+    /// <summary>五页之内退不出去：只有「序章完成」那一页能按 Esc。</summary>
     public bool CanClose => Page == TransitionPage.Done;
+
+    /// <summary>这一档还差分封：有表、且六个人没都记过。</summary>
+    public bool NeedsEnfeoff => _companions is not null
+                                && !EnfeoffRecord.AllRecorded(_state, _companions);
 
     /// <summary>
     /// Esc 在这一页上不管用。留一句话在顶上，别让玩家以为按键坏了。
@@ -261,6 +436,7 @@ public sealed class TransitionScreen
     /// <summary>
     /// 摆第一页。已经定过都 / 选过国号的档（上次走到一半退出）会照原样高亮，
     /// 但页仍从第一页走起——那十分钟本来就是从头念到尾的。
+    /// 分封档位同理：记过的照记过的摆，没记过的一律默认薄封。
     /// </summary>
     public void Open()
     {
@@ -280,6 +456,15 @@ public sealed class TransitionScreen
             foreach (var oath in _made.Take(Math.Min(TransitionBook.MaxOaths, _made.Count)))
                 _picked.Add(oath.Id);
         }
+
+        _grades.Clear();
+        _sealed.Clear();
+        _worries.Clear();
+        if (_companions is not null)
+            foreach (var companion in _companions.All)
+                _grades.Add(EnfeoffRecord.TryGet(_state, companion.Id, out var grade)
+                    ? grade
+                    : Enfeoff.Light);
 
         Page = TransitionPage.Capital;
         Selected = Math.Max(0, IndexOfCapital(_state.Prologue.Capital));
@@ -334,6 +519,76 @@ public sealed class TransitionScreen
     /// <returns><c>已立 2 条，其余 1 条将转成债</c>。</returns>
     public string OathSummary() =>
         $"已立 {_picked.Count} 条，其余 {_made.Count - _picked.Count} 条将转成债";
+
+    // ————————————————————————— 分封页（S4-01d） —————————————————————————
+
+    /// <summary>分封页的六行（顺序即 <c>companions.csv</c>）。没有功臣表时是空表。</summary>
+    /// <returns>六行。</returns>
+    public IReadOnlyList<TransitionRow> EnfeoffRows()
+    {
+        var rows = new List<TransitionRow>(_companions?.Count ?? 0);
+        if (_companions is null) return rows;
+
+        for (var i = 0; i < _companions.Count; i++)
+        {
+            var companion = _companions.All[i];
+            rows.Add(new TransitionRow(companion.Id,
+                TransitionText.EnfeoffRow(companion, _grades[i]), false));
+        }
+
+        return rows;
+    }
+
+    /// <summary>六个人这一趟各封哪一档（按表里的顺序）。</summary>
+    /// <returns>档位表；没有功臣表时是空表。</returns>
+    public IReadOnlyList<Enfeoff> EnfeoffGrades => _grades;
+
+    /// <summary>光标那一位封的是哪一档。</summary>
+    /// <returns>档位；光标不在合法行上时是 <see cref="Enfeoff.Light"/>。</returns>
+    public Enfeoff GradeAtCursor =>
+        Selected >= 0 && Selected < _grades.Count ? _grades[Selected] : Enfeoff.Light;
+
+    /// <summary>分封页挪光标：到头就停，不绕圈（和国策页同一条手感）。</summary>
+    /// <param name="delta">−1 / +1。</param>
+    public void MoveEnfeoffCursor(int delta)
+    {
+        if (Page != TransitionPage.Enfeoff || _grades.Count == 0) return;
+
+        Selected = Math.Clamp(Selected + delta, 0, _grades.Count - 1);
+        Note = "";
+    }
+
+    /// <summary>
+    /// 分封页改档：厚封 → 薄封 → 不封 → 厚封 循环。
+    /// 只改面板上的档，不结算——结算要等 Enter，免得玩家左右翻两下忠诚就掉两回。
+    /// </summary>
+    /// <param name="delta">−1 往左、+1 往右；其余值不认。</param>
+    /// <returns>改成了返回 true。</returns>
+    public bool CycleGrade(int delta)
+    {
+        if (Page != TransitionPage.Enfeoff || _grades.Count == 0) return false;
+        if (delta == 0) return false;
+
+        var step = delta > 0 ? 1 : -1;
+        var count = 3;
+        var next = ((int)_grades[Selected] + step + count) % count;
+        _grades[Selected] = (Enfeoff)next;
+        Note = "";
+        return true;
+    }
+
+    /// <summary>
+    /// 报告页的「分封」行；这一趟没封过就是空串。
+    /// </summary>
+    /// <returns>一行字。</returns>
+    public string EnfeoffLine() => TransitionText.EnfeoffReportLine(_sealed);
+
+    /// <summary>报告页的提醒行（离心 / 权臣 / 走了）；一个都没有就是空串。</summary>
+    /// <returns>一行字。</returns>
+    public string EnfeoffNotice() => TransitionText.EnfeoffNoticeLine(_worries);
+
+    /// <summary>这一趟定下的封赏（报告页那一行的来源），按表里的顺序；没封过是空表。</summary>
+    public IReadOnlyList<EnfeoffPart> SealedParts => _sealed;
 
     // ————————————————————————— 按键 —————————————————————————
 
@@ -459,8 +714,7 @@ public sealed class TransitionScreen
                 {
                     // 一条都没许过：国策这页根本不存在，顶上闪一句就过去。
                     Flash = TransitionText.NoOathsFlash;
-                    Page = TransitionPage.Report;
-                    Selected = 0;
+                    EnterAfterOaths();
                     Note = "";
                     return false;
                 }
@@ -495,8 +749,20 @@ public sealed class TransitionScreen
                     return false;
                 }
 
+                EnterAfterOaths();
+                Note = "";
+                return true;
+
+            case TransitionPage.Enfeoff:
+                if (!SettleEnfeoff())
+                {
+                    Note = Note.Length > 0 ? Note : "这六个人还没定全。";
+                    return false;
+                }
+
                 Page = TransitionPage.Report;
                 Selected = 0;
+                Flash = "";
                 Note = "";
                 return true;
 
@@ -519,24 +785,91 @@ public sealed class TransitionScreen
         }
     }
 
+    // ————————————————————————— 分封结算（S4-01d） —————————————————————————
+
+    /// <summary>国策页之后往哪走：还差分封就进分封页，否则直接进报告页。</summary>
+    private void EnterAfterOaths()
+    {
+        Page = NeedsEnfeoff ? TransitionPage.Enfeoff : TransitionPage.Report;
+        Selected = 0;
+    }
+
+    /// <summary>
+    /// 把六个人逐个封下去：先算账（<see cref="EnfeoffBook.Enfeoff"/>），再落档
+    /// （<see cref="EnfeoffRecord.Put"/>），最后把人话留给报告页。
+    ///
+    /// 已经记过的人不再封第二遍——重进转段、或上一次走到一半退出，都不该第二次扣忠诚。
+    /// 六个都封成返回 true；有一个没封成（旗标名坏）就整页停住，一个字也不往下走。
+    /// </summary>
+    /// <returns>六个人都记上了返回 true。</returns>
+    private bool SettleEnfeoff()
+    {
+        if (_companions is null || _enfeoff is null || _trust is null || _flags is null)
+        {
+            Note = "分封这一页没接上账本。";
+            return false;
+        }
+
+        _sealed.Clear();
+        _worries.Clear();
+
+        for (var i = 0; i < _companions.Count; i++)
+        {
+            var companion = _companions.All[i];
+
+            if (EnfeoffRecord.TryGet(_state, companion.Id, out _))
+                continue;                       // 记过了：这一次不再算
+
+            var grade = _grades[i];
+            var result = _enfeoff.Enfeoff(companion, grade, _trust, _flags);
+            if (!result.Ok)
+            {
+                Note = result.Reason;
+                return false;
+            }
+
+            EnfeoffRecord.Put(_state, companion.Id, grade);
+
+            var label = EnfeoffBook.Label(grade);
+            _sealed.Add(new EnfeoffPart(companion.Name, label, companion.Loyalty, result.LoyaltyAfter));
+
+            if (_flags.Has(EnfeoffBook.ResentedFlag(companion.Id), null))
+                _worries.Add(TransitionText.EnfeoffWorry(companion.Name, label));
+            else if (_flags.Has(EnfeoffBook.WillBePowerfulFlag(companion.Id), null))
+                _worries.Add(TransitionText.EnfeoffAmbition(companion.Name, label));
+            else if (_flags.Has(EnfeoffBook.LeftFlag(companion.Id), null))
+                _worries.Add(TransitionText.EnfeoffGone(companion.Name));
+        }
+
+        // 六个人各有一条记录才算这一页做完（记过的也算）。
+        return EnfeoffRecord.AllRecorded(_state, _companions);
+    }
+
     // ————————————————————————— 报告页 —————————————————————————
 
     /// <summary>
-    /// 第一份国情报告：上四行是玩家刚选的，中间五行是文档原句，最后一行是当下的实数。
+    /// 第一份国情报告：上四行是玩家刚选的，接着是分封那一行（有过分封才有）与提醒，
+    /// 中间五行是文档原句，最后一行是当下的实数。
     /// </summary>
     /// <param name="facts">兵力 / 三轴 / 囊 / 第几天。</param>
-    /// <returns>按打印顺序排好的十行。</returns>
+    /// <returns>按打印顺序排好的行（没分封时仍是十行）。</returns>
     public IReadOnlyList<string> ReportLines(ReportFacts facts)
     {
         _realms.TryGet(_state.Prologue.Realm, out var realm);
 
-        var lines = new List<string>(10)
+        var lines = new List<string>(12)
         {
             $"都城 {HubNames.ShortOf(_state.Prologue.Capital)}",
             realm is null ? "国号 —" : TransitionText.RealmLine(realm),
             $"国策 {_state.Prologue.Oaths.Count} 条",
             $"未决 {_state.Prologue.Debts.Count} 条",
         };
+
+        var enfeoff = EnfeoffLine();
+        if (enfeoff.Length > 0) lines.Add(enfeoff);
+
+        var notice = EnfeoffNotice();
+        if (notice.Length > 0) lines.Add(notice);
 
         lines.AddRange(TransitionText.ReportFixedLines);
         lines.Add(TransitionText.NumberLine(facts));
@@ -551,6 +884,7 @@ public sealed class TransitionScreen
         TransitionPage.Capital => TransitionText.CapitalHead,
         TransitionPage.Realm => TransitionText.RealmHead,
         TransitionPage.Oaths => TransitionText.OathsHead,
+        TransitionPage.Enfeoff => TransitionText.EnfeoffHead,
         TransitionPage.Report => TransitionText.ReportHead,
         _ => TransitionText.DoneHead,
     };
@@ -562,6 +896,7 @@ public sealed class TransitionScreen
         TransitionPage.Capital => TransitionText.CapitalFoot,
         TransitionPage.Realm => TransitionText.RealmFoot,
         TransitionPage.Oaths => $"{OathSummary()}　·　{TransitionText.OathsFoot}",
+        TransitionPage.Enfeoff => TransitionText.EnfeoffFoot,
         TransitionPage.Report => TransitionText.ReportFoot,
         _ => TransitionText.DoneFoot,
     };
@@ -573,7 +908,8 @@ public sealed class TransitionScreen
         TransitionPage.Capital => TransitionBook.CapitalHubs.Count,
         TransitionPage.Realm => _realms.Count,
         TransitionPage.Oaths => _made.Count,
-        TransitionPage.Report => 10,
+        TransitionPage.Enfeoff => _grades.Count,
+        TransitionPage.Report => 13,
         _ => 0,
     };
 
@@ -581,7 +917,8 @@ public sealed class TransitionScreen
     /// <param name="index">0 起。</param>
     /// <returns>画金色时返回 true。</returns>
     public bool IsCursorAt(int index) =>
-        Page is TransitionPage.Capital or TransitionPage.Realm or TransitionPage.Oaths
+        Page is TransitionPage.Capital or TransitionPage.Realm
+            or TransitionPage.Oaths or TransitionPage.Enfeoff
         && index == Selected;
 
     /// <summary>国号 id 在第几行；不认识返回 −1。</summary>
@@ -687,5 +1024,134 @@ public static class TransitionDemo
                 return i;
 
         return 0;
+    }
+}
+
+/// <summary>
+/// <c>--enfeoff</c> 的那一趟（票号 S4-01d）：六个人的官、默认薄封的账、
+/// 把裴无咎改成厚封之后的样子，以及报告页那一行。
+///
+/// 走的是真的 <see cref="EnfeoffBook"/> 与 <see cref="TransitionText"/>，
+/// 只动自己造的那份三轴与旗标，绝不碰玩家那份档。
+/// </summary>
+public static class EnfeoffDemo
+{
+    /// <summary>调试行共用的抬头。</summary>
+    public const string Prefix = "[分封]";
+
+    /// <summary>调试里改成厚封的那一位：裴无咎（野心 78，厚封会变权臣）。</summary>
+    public const string HeavyTarget = "peiwujiu";
+
+    /// <summary>
+    /// 跑一趟，把四行按顺序交回来。
+    /// </summary>
+    /// <param name="companions">六位功臣（companions.csv）。</param>
+    /// <returns>四行：六人的官、默认薄封、裴无咎改厚封、报告行。</returns>
+    public static IReadOnlyList<string> Lines(CompanionTable companions)
+    {
+        if (companions == null) throw new ArgumentNullException(nameof(companions));
+
+        var lines = new List<string>(4)
+        {
+            $"{Prefix} 六人：{string.Join("｜", companions.All.Select(c => $"{c.Name} {c.Office}"))}",
+        };
+
+        // 第二行：六个人全按默认的薄封算一遍，忠诚各 +6。
+        var lightTrust = new TrustState();
+        var lightFlags = new FlagStore();
+        var lightBook = new EnfeoffBook();
+        var allPlusSix = true;
+        foreach (var companion in companions.All)
+        {
+            var before = companion.Loyalty;
+            var result = lightBook.Enfeoff(companion, Enfeoff.Light, lightTrust, lightFlags);
+            if (!result.Ok || result.LoyaltyAfter - before != EnfeoffBook.LightLoyalty) allPlusSix = false;
+        }
+
+        lines.Add($"{Prefix} 默认薄封：六人忠诚 +{EnfeoffBook.LightLoyalty}"
+                  + (allPlusSix ? "" : "（有人已到顶）"));
+
+        // 第三行：把裴无咎单独改成厚封，看野心家的那笔账。
+        companions.TryGet(HeavyTarget, out var heavy);
+        if (heavy is not null)
+        {
+            var trust = new TrustState();
+            var flags = new FlagStore();
+            var result = new EnfeoffBook().Enfeoff(heavy, Enfeoff.Heavy, trust, flags);
+            var flag = flags.Has(EnfeoffBook.WillBePowerfulFlag(heavy.Id), null)
+                ? EnfeoffBook.WillBePowerfulFlag(heavy.Id)
+                : "（无）";
+
+            lines.Add($"{Prefix} 把{heavy.Name}改成厚封 → 忠 {heavy.Loyalty} → {result.LoyaltyAfter}"
+                      + $"，置 {flag}，官望 +{EnfeoffBook.HeavyGuan}");
+        }
+        else
+        {
+            lines.Add($"{Prefix} 把{HeavyTarget}改成厚封：功臣表里没有这个人");
+        }
+
+        // 第四行：五个薄封 + 裴无咎厚封，走真的结算，再看报告页那一行。
+        var trust2 = new TrustState();
+        var flags2 = new FlagStore();
+        var book2 = new EnfeoffBook();
+        var parts = new List<EnfeoffPart>(companions.Count);
+        foreach (var companion in companions.All)
+        {
+            var grade = string.Equals(companion.Id, HeavyTarget, StringComparison.Ordinal)
+                ? Enfeoff.Heavy
+                : Enfeoff.Light;
+
+            var result = book2.Enfeoff(companion, grade, trust2, flags2);
+            if (result.Ok)
+                parts.Add(new EnfeoffPart(companion.Name, EnfeoffBook.Label(grade),
+                    companion.Loyalty, result.LoyaltyAfter));
+        }
+
+        lines.Add($"{Prefix} 报告行：{TransitionText.EnfeoffReportLine(parts)}");
+        return lines;
+    }
+
+    /// <summary>
+    /// <c>--shotenfeoff</c> 要的那一屏：真的转段界面停在分封页，光标停在裴无咎、已改成厚封。
+    /// </summary>
+    /// <param name="companions">六位功臣。</param>
+    /// <param name="oaths">誓约表（转段结算器要）。</param>
+    /// <param name="realms">国号表。</param>
+    /// <returns>画的那一屏与它写的那份存档（自检专用，不落盘）。</returns>
+    public static (TransitionScreen Screen, SaveState State) OpenScreen(
+        CompanionTable companions, OathTable oaths, RealmTable realms)
+    {
+        if (companions == null) throw new ArgumentNullException(nameof(companions));
+        if (oaths == null) throw new ArgumentNullException(nameof(oaths));
+        if (realms == null) throw new ArgumentNullException(nameof(realms));
+
+        var state = new SaveState();
+        for (var i = 1; i <= TransitionBook.MinBeats; i++)
+            state.Prologue.BeatsDone.Add($"b{i:00}");
+
+        var flags = new FlagStore();
+        foreach (var flag in TransitionDemo.PickFlags) flags.Set(flag);
+
+        var trust = new TrustState { Min = 6, Guan = 2, Yi = 3 };
+        var book = new TransitionBook(oaths, realms, flags, state);
+        var screen = new TransitionScreen(
+            book, realms, state, companions, new EnfeoffBook(), trust, flags);
+
+        // 第一页定都 hub4，第二页取第一个国号，第三页默认全立 → 第四页分封。
+        screen.SelectCapital(3);
+        screen.Advance();
+        screen.SelectRealm(0);
+        screen.Advance();
+        screen.Advance();
+
+        var at = 0;
+        for (var i = 0; i < companions.Count; i++)
+            if (string.Equals(companions.All[i].Id, HeavyTarget, StringComparison.Ordinal))
+                at = i;
+
+        screen.MoveEnfeoffCursor(at - screen.Selected);
+        screen.CycleGrade(-1);              // 薄封 → 厚封
+
+        return (screen, state);
     }
 }
